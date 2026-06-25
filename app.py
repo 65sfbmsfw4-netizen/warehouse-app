@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 import datetime
+import urllib.request
+import hashlib
 
-st.set_page_config(page_title="Multi-Tenant WMS", page_icon="📦", layout="centered")
+st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layout="centered")
 st.markdown("<style>.stButton>button { width: 100%; height: 50px; font-size: 16px; }</style>", unsafe_allow_html=True)
 
 # --- BACKEND SUPABASE CONNECTION ---
@@ -20,42 +22,110 @@ except Exception as e:
     st.error("Database connection failure. Please review credentials.")
     st.stop()
 
+# --- HELPER SECURITY UTILITIES ---
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+@st.cache_data(ttl=60)
+def get_client_ip():
+    try:
+        # Resolves the public IP address routing this browser thread
+        return urllib.request.urlopen('https://api.ipify.org').read().decode('utf8')
+    except:
+        return "127.0.0.1"
+
+# --- CORE SESSION STATE STATE ENGINES ---
+if "user_session" not in st.session_state:
+    st.session_state.user_session = None
+
+current_ip = get_client_ip()
+
+# --- AUTOMATED IP PASS-THROUGH LOG-IN TRACE ---
+if st.session_state.user_session is None and current_ip != "127.0.0.1":
+    try:
+        auto_ip_check = supabase.table("user_profiles").select("*").eq("last_known_ip", current_ip).execute()
+        if auto_ip_check.data:
+            st.session_state.user_session = auto_ip_check.data[0]
+    except Exception:
+        pass # Gracefully handle cases where the user table isn't fully ready yet
+
 # ==========================================
-# FEATURE: GATEKEEPER LOGIN MECHANISM
+# AUTHENTICATION PORTAL (SIGN IN / SIGN UP)
 # ==========================================
-if "access_code" not in st.session_state:
-    st.session_state.access_code = None
-
-if st.session_state.access_code is None:
-    st.title("🔒 Inventory Gatekeeper")
-    st.write("Please enter your unique Access Code to initialize your dedicated inventory terminal.")
+if st.session_state.user_session is None:
+    st.title("🔐 Enterprise Inventory Gatekeeper")
+    auth_mode = st.tabs(["Sign In", "Create Corporate Account"])
     
-    input_code = st.text_input("🔑 Access Code:", type="password").strip().upper()
-    
-    if st.button("🚪 Enter Terminal"):
-        if input_code:
-            st.session_state.access_code = input_code
-            st.success(f"Connected to terminal workspace: {input_code}")
-            st.rerun()
-        else:
-            st.warning("Please enter a valid code to proceed.")
-    st.stop() # Stops the rest of the script from rendering until logged in
+    with auth_mode[0]:
+        st.subheader("Sign In")
+        login_user = st.text_input("Username:", key="log_user").strip()
+        login_pass = st.text_input("Password:", type="password", key="log_pass").strip()
+        
+        if st.button("🔑 Log In to Workspace"):
+            if login_user and login_pass:
+                target_hash = hash_password(login_pass)
+                user_query = supabase.table("user_profiles").select("*").eq("username", login_user).eq("password_hash", target_hash).execute()
+                
+                if user_query.data:
+                    user_record = user_query.data[0]
+                    # Bind the client device IP to keep them logged in dynamically
+                    supabase.table("user_profiles").update({"last_known_ip": current_ip}).eq("id", user_record["id"]).execute()
+                    user_record["last_known_ip"] = current_ip
+                    st.session_state.user_session = user_record
+                    st.success("Access authorized. Redirecting...")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password configuration match.")
+            else:
+                st.warning("Please input both login fields.")
+                
+    with auth_mode[1]:
+        st.subheader("Create Corporate Account")
+        reg_user = st.text_input("Choose Username:", key="reg_user").strip()
+        reg_pass = st.text_input("Choose Strong Password:", type="password", key="reg_pass").strip()
+        reg_code = st.text_input("⚠️ One-Time Inventory Activation Access Code:", type="password", key="reg_code").strip().upper()
+        
+        if st.button("➕ Register Account"):
+            if not reg_user or not reg_pass or not reg_code:
+                st.warning("All verification and creation forms require completion inputs.")
+            else:
+                check_dup = supabase.table("user_profiles").select("username").eq("username", reg_user).execute()
+                if check_dup.data:
+                    st.error("That account identity username is already claimed.")
+                else:
+                    # Construct and insert the fresh user database entity block
+                    hashed_p = hash_password(reg_pass)
+                    new_user_data = {
+                        "username": reg_user,
+                        "password_hash": hashed_p,
+                        "access_code": reg_code,
+                        "last_known_ip": current_ip
+                    }
+                    supabase.table("user_profiles").insert(new_user_data).execute()
+                    st.success("Account constructed cleanly! Please toggle to Sign In to lock in authorization access.")
+    st.stop()
 
-# --- APP ACTIVE TERMINAL STATE ---
-user_code = st.session_state.access_code
+# ==========================================
+# SYSTEM WORKSPACE CONTEXT LOADED
+# ==========================================
+user_profile = st.session_state.user_session
+user_code = user_profile["access_code"]
+profile_db_id = user_profile["id"]
 
-# Navigation Header Layout
-col_title, col_logout = st.columns([4, 1])
-with col_title:
-    st.title("📦 Mobile WMS Terminal")
-    st.caption(f"Active Workspace Security Context: **{user_code}**")
-with col_logout:
-    st.write("") # Padding
-    if st.button("🔒 Logout"):
-        st.session_state.access_code = None
+# Dynamic Header Display
+col_header, col_exit = st.columns([4, 1])
+with col_header:
+    st.title(user_profile["terminal_title"])
+    st.caption(f"Operator identity: **{user_profile['username']}** | Channel Context: `{user_code}`")
+with col_exit:
+    st.write("") # Layout alignment element
+    if st.button("🔒 Sign Out"):
+        # Strip persistent device token links when logging out intentionally
+        supabase.table("user_profiles").update({"last_known_ip": None}).eq("id", profile_db_id).execute()
+        st.session_state.user_session = None
         st.rerun()
 
-tab1, tab2, tab3, tab4 = st.tabs(["🔄 Scan In/Out", "🔍 Case-Insensitive Search", "📊 Live Stock & Edit", "📜 Past Records"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Scan In/Out", "🔍 Search", "📊 Live Stock & Edit", "📜 Past Records", "⚙️ Preferences"])
 
 # ==========================================
 # TAB 1: OPERATIONAL TERMINAL (IN / OUT FLOW)
@@ -74,7 +144,6 @@ with tab1:
         if not sku_input or not location_input:
             st.warning("Validation Error: SKU and Location fields are required.")
         else:
-            # FILTER FIX: Look for match with identical SKU, Location, AND matching Access Code
             query = supabase.table("inventory_items").select("*").eq("sku", sku_input).eq("location", location_input).eq("access_code", user_code).execute()
             existing_records = query.data
             movement_type = "IN" if "IN" in action else "OUT"
@@ -88,14 +157,14 @@ with tab1:
                 elif new_qty == 0:
                     supabase.table("inventory_items").delete().eq("id", existing_records[0]["id"]).execute()
                     supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
-                    st.success(f"🗑️ Row cleared.")
+                    st.success("🗑️ Row cleared.")
                 else:
                     supabase.table("inventory_items").update({"quantity": new_qty, "last_updated": datetime.datetime.now().isoformat()}).eq("id", existing_records[0]["id"]).execute()
                     supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
                     st.success(f"✅ Updated Stock! New Total: {new_qty}")
             else:
                 if movement_type == "OUT":
-                    st.error(f"❌ Aborted: Cannot pick an item from a non-existent location.")
+                    st.error("❌ Aborted: Cannot pick an item from a non-existent location.")
                 else:
                     supabase.table("inventory_items").insert({"sku": sku_input, "item_name": f"Item {sku_input}", "location": location_input, "quantity": qty, "access_code": user_code}).execute()
                     supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
@@ -109,7 +178,6 @@ with tab2:
     search_sku = st.text_input("🔍 Search SKU (Case Insensitive):").strip()
     
     if search_sku:
-        # FILTER FIX: Only find items belonging to this specific user's access code context
         res = supabase.table("inventory_items").select("*").ilike("sku", search_sku).eq("access_code", user_code).execute()
         if res.data:
             df = pd.DataFrame(res.data)
@@ -124,8 +192,6 @@ with tab2:
 # ==========================================
 with tab3:
     st.subheader("Global Inventory Grid Management")
-    
-    # FILTER FIX: Only fetch rows assigned to the current active user code context
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).order("location", desc=False).execute()
     
     if all_items.data:
@@ -139,68 +205,4 @@ with tab3:
                 "Quantity": r["quantity"]
             }
             if isinstance(r["metadata"], dict):
-                for k, v in r["metadata"].items():
-                    flat_row[k] = v
-            rows.append(flat_row)
-            
-        base_df = pd.DataFrame(rows)
-        
-        with st.expander("🛠️ Column Management Tools"):
-            new_col_name = st.text_input("Enter New Custom Column Name:").strip()
-            if "custom_columns" not in st.session_state:
-                st.session_state.custom_columns = []
-            if st.button("➕ Inject Custom Attribute Column"):
-                if new_col_name and new_col_name not in base_df.columns and new_col_name not in st.session_state.custom_columns:
-                    st.session_state.custom_columns.append(new_col_name)
-                    st.rerun()
-
-        for extra_col in st.session_state.custom_columns:
-            if extra_col not in base_df.columns:
-                base_df[extra_col] = ""
-
-        edited_df = st.data_editor(base_df, hide_index=True, use_container_width=True, disabled=["Internal DB ID"])
-        
-        if st.button("💾 Save Grid Configuration Updates"):
-            with st.spinner("Synchronizing batch edits..."):
-                fixed_sys_cols = ["Internal DB ID", "SKU", "Item Name", "Location", "Quantity"]
-                for idx, row in edited_df.iterrows():
-                    db_id = row["Internal DB ID"]
-                    meta_payload = {}
-                    for col in edited_df.columns:
-                        if col not in fixed_sys_cols and pd.notna(row[col]) and str(row[col]).strip() != "":
-                            meta_payload[col] = str(row[col])
-                            
-                    update_data = {
-                        "sku": str(row["SKU"]),
-                        "item_name": str(row["Item Name"]),
-                        "location": str(row["Location"]),
-                        "quantity": int(row["Quantity"]),
-                        "metadata": meta_payload,
-                        "last_updated": datetime.datetime.now().isoformat()
-                    }
-                    supabase.table("inventory_items").update(update_data).eq("id", db_id).execute()
-                st.session_state.custom_columns = []
-                st.success("🎉 Grid updates saved successfully!")
-                st.rerun()
-    else:
-        st.info("Your workspace inventory database is currently empty.")
-
-# ==========================================
-# TAB 4: HISTORICAL LEDGER (PAST RECORDS)
-# ==========================================
-with tab4:
-    st.subheader("📜 Continuous Stock Ledger Audit Track")
-    
-    # FILTER FIX: Only load transaction histories that matching this user's active access code
-    ledger_query = supabase.table("stock_ledger").select("*").eq("access_code", user_code).order("timestamp", desc=True).execute()
-    
-    if ledger_query.data:
-        ledger_df = pd.DataFrame(ledger_query.data)
-        ledger_df["Time Logged"] = ledger_df["timestamp"].str.slice(0, 19).str.replace("T", " ")
-        st.dataframe(
-            ledger_df[["Time Logged", "sku", "movement_type", "quantity"]].rename(columns={"sku":"Product SKU","movement_type":"Operation","quantity":"Quantity Shift"}), 
-            use_container_width=True, 
-            hide_index=True
-        )
-    else:
-        st.info("No transaction history records discovered inside your workspace.")
+                for
