@@ -141,20 +141,16 @@ with col_exit:
         st.session_state.batch_queue = []
         st.rerun()
 
-# [Wording Change 8, 9] Tab Layout Labels Updated
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL
+# TAB 1: OPERATIONAL TERMINAL (HEADER REMOVED)
 # ==========================================
 with tab1:
-    st.subheader("Process Stock Logistics Flow")
-    
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
     
     st.markdown("---")
     
-    # --- FIXED: SEPARATED SUB-INPUT ENTRIES ---
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter SKU Code:", key="wms_single_input_bar").strip()
     else:
@@ -162,10 +158,8 @@ with tab1:
     
     col_dir, col_qt = st.columns(2)
     with col_dir:
-        # [Wording Change 1, 6] Label changed to Action; Removed details behind IN, OUT, TRANSFER
         action = st.radio("Action:", ["IN", "OUT", "TRANSFER"])
     with col_qt:
-        # [Wording Change 2] Label changed to Quantity
         qty = st.number_input("Quantity:", min_value=1, value=1)
         
     if action == "TRANSFER":
@@ -176,7 +170,6 @@ with tab1:
         with col_t:
             loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc")
     else:
-        # [Wording Change 3] Label changed to Location
         location_input = st.selectbox("Location:", options=configured_locations)
         loc_from, loc_to = None, None
 
@@ -186,7 +179,6 @@ with tab1:
         for bar_field in configured_custom_bars:
             scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_m_{bar_field}").strip()
 
-    # Core engine transaction router
     def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None):
         if meta is None: meta = {}
         movement_type = "IN" if "IN" in act else "OUT" if "OUT" in act else "TRANSFER"
@@ -242,7 +234,6 @@ with tab1:
                     supabase.table("stock_ledger").insert({"sku": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
                     return True, f"📦 Created fresh batch entry tracking for {sku} inside matrix sector {loc}."
 
-    # --- EXECUTION BUTTON ROUTER CORES ---
     if op_mode == "Single Entry":
         if st.button("🚀 Commit Direct Single Transaction"):
             if not sku_input:
@@ -256,7 +247,6 @@ with tab1:
     else:
         col_queue, col_clear = st.columns(2)
         with col_queue:
-            # [Wording Change 4] Label changed to Check scanned
             if st.button("📥 Check scanned"):
                 if not sku_stream:
                     st.warning("Provide item tracking parameters inside the top entry field input.")
@@ -271,7 +261,6 @@ with tab1:
                         })
                     st.toast(f"Parsed and added {len(parsed_skus)} item entries to execution layout queue staging table.")
         with col_clear:
-            # [Wording Change 5] Label changed to Reset scanned
             if st.button("🗑️ Reset scanned"):
                 st.session_state.batch_queue = []
                 st.rerun()
@@ -314,11 +303,9 @@ with tab1:
                 st.rerun()
 
 # ==========================================
-# TAB 2: SMART FINDER
+# TAB 2: SMART FINDER (HEADER REMOVED)
 # ==========================================
 with tab2:
-    # [Wording Change 7] Header text altered to Search Inventory
-    st.subheader("Search Inventory")
     search_sku = st.text_input("🔍 Search SKU:").strip()
     
     if search_sku:
@@ -336,11 +323,9 @@ with tab2:
             st.info("No matching item metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK TRACKING & EDITS
+# TAB 3: LIVE STOCK (HEADER REMOVED)
 # ==========================================
 with tab3:
-    # [Wording Change 10] Header text altered to Control Interface Data
-    st.subheader("Control Interface Data")
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
     
     if all_items.data:
@@ -410,10 +395,9 @@ with tab3:
         st.info("Your workspace channels contain zero product assets data rows.")
 
 # ==========================================
-# TAB 4: HISTORICAL LEDGER (LOCALIZED TIME ENGINE)
+# TAB 4: HISTORY (HEADER REMOVED)
 # ==========================================
 with tab4:
-    st.subheader("📜 Continuous Stock Ledger Audit Track")
     ledger_query = supabase.table("stock_ledger").select("*").eq("access_code", user_code).order("timestamp", desc=True).execute()
     
     if ledger_query.data:
@@ -443,7 +427,7 @@ with tab4:
         st.info("No transaction history records discovered inside your workspace.")
 
 # ==========================================
-# TAB 5: PREFERENCES & TERMINAL CONFIGURATION
+# TAB 5: PREFERENCES (HEADER KEPT)
 # ==========================================
 with tab5:
     st.subheader("⚙️ Terminal View Configurations")
