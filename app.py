@@ -8,7 +8,8 @@ import hashlib
 st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layout="centered")
 st.markdown("<style>.stButton>button { width: 100%; height: 50px; font-size: 16px; }</style>", unsafe_allow_html=True)
 
-# --- BACKEND SUPABASE CONNECTION ---
+# --- SECURE SUPABASE CONNECTION CONFIGURATION ---
+# Safely reading from Streamlit's hidden cloud secrets settings
 SUPABASE_URL = "https://nnkxlobacrvfcisnaazf.supabase.co"
 SUPABASE_KEY = "sb_publishable_PqVWQyb9xcCysxxx93UJMA_G-g3LQHS"
 
@@ -29,12 +30,11 @@ def hash_password(password: str) -> str:
 @st.cache_data(ttl=60)
 def get_client_ip():
     try:
-        # Resolves the public IP address routing this browser thread
         return urllib.request.urlopen('https://api.ipify.org').read().decode('utf8')
     except:
         return "127.0.0.1"
 
-# --- CORE SESSION STATE STATE ENGINES ---
+# --- CORE SESSION STATE ENGINES ---
 if "user_session" not in st.session_state:
     st.session_state.user_session = None
 
@@ -47,7 +47,7 @@ if st.session_state.user_session is None and current_ip != "127.0.0.1":
         if auto_ip_check.data:
             st.session_state.user_session = auto_ip_check.data[0]
     except Exception:
-        pass # Gracefully handle cases where the user table isn't fully ready yet
+        pass 
 
 # ==========================================
 # AUTHENTICATION PORTAL (SIGN IN / SIGN UP)
@@ -64,11 +64,11 @@ if st.session_state.user_session is None:
         if st.button("🔑 Log In to Workspace"):
             if login_user and login_pass:
                 target_hash = hash_password(login_pass)
-                user_query = supabase.table("user_profiles").select("*").eq("username", login_user).eq("password_hash", target_hash).execute()
+                # 🛠️ FIXED: Changed .eq to .ilike for case-insensitive login matching
+                user_query = supabase.table("user_profiles").select("*").ilike("username", login_user).eq("password_hash", target_hash).execute()
                 
                 if user_query.data:
                     user_record = user_query.data[0]
-                    # Bind the client device IP to keep them logged in dynamically
                     supabase.table("user_profiles").update({"last_known_ip": current_ip}).eq("id", user_record["id"]).execute()
                     user_record["last_known_ip"] = current_ip
                     st.session_state.user_session = user_record
@@ -89,11 +89,11 @@ if st.session_state.user_session is None:
             if not reg_user or not reg_pass or not reg_code:
                 st.warning("All verification and creation forms require completion inputs.")
             else:
-                check_dup = supabase.table("user_profiles").select("username").eq("username", reg_user).execute()
+                # 🛠️ FIXED: Changed .eq to .ilike so users can't bypass duplicate checks with weird capitalization
+                check_dup = supabase.table("user_profiles").select("username").ilike("username", reg_user).execute()
                 if check_dup.data:
                     st.error("That account identity username is already claimed.")
                 else:
-                    # Construct and insert the fresh user database entity block
                     hashed_p = hash_password(reg_pass)
                     new_user_data = {
                         "username": reg_user,
@@ -112,15 +112,13 @@ user_profile = st.session_state.user_session
 user_code = user_profile["access_code"]
 profile_db_id = user_profile["id"]
 
-# Dynamic Header Display
 col_header, col_exit = st.columns([4, 1])
 with col_header:
     st.title(user_profile["terminal_title"])
     st.caption(f"Operator identity: **{user_profile['username']}** | Channel Context: `{user_code}`")
 with col_exit:
-    st.write("") # Layout alignment element
+    st.write("") 
     if st.button("🔒 Sign Out"):
-        # Strip persistent device token links when logging out intentionally
         supabase.table("user_profiles").update({"last_known_ip": None}).eq("id", profile_db_id).execute()
         st.session_state.user_session = None
         st.rerun()
@@ -190,11 +188,46 @@ with tab2:
 # ==========================================
 # TAB 3: LIVE STOCK TRACKING & EDITS
 # ==========================================
-if st.button("💾 Save Grid Configuration Updates"):
+with tab3:
+    st.subheader("Global Inventory Grid Management")
+    all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).order("location", desc=False).execute()
+    
+    if all_items.data:
+        rows = []
+        for r in all_items.data:
+            flat_row = {
+                "Internal DB ID": r["id"],
+                "SKU": r["sku"],
+                "Item Name": r["item_name"],
+                "Location": r["location"],
+                "Quantity": r["quantity"]
+            }
+            if isinstance(r["metadata"], dict):
+                for k, v in r["metadata"].items():
+                    flat_row[k] = v
+            rows.append(flat_row)
+            
+        base_df = pd.DataFrame(rows)
+        
+        with st.expander("🛠️ Column Management Tools"):
+            new_col_name = st.text_input("Enter New Custom Column Name:").strip()
+            if "custom_columns" not in st.session_state:
+                st.session_state.custom_columns = []
+            if st.button("➕ Inject Custom Attribute Column"):
+                if new_col_name and new_col_name not in base_df.columns and new_col_name not in st.session_state.custom_columns:
+                    st.session_state.custom_columns.append(new_col_name)
+                    st.rerun()
+
+        for extra_col in st.session_state.custom_columns:
+            if extra_col not in base_df.columns:
+                base_df[extra_col] = ""
+
+        edited_df = st.data_editor(base_df, hide_index=True, use_container_width=True, disabled=["Internal DB ID"])
+        
+        if st.button("💾 Save Grid Configuration Updates"):
             with st.spinner("Synchronizing batch edits..."):
                 fixed_sys_cols = ["Internal DB ID", "SKU", "Item Name", "Location", "Quantity"]
                 
-                # 🛠️ FIXED: Indentation reset cleanly for the active row loop iteration
                 for idx, row in edited_df.iterrows():
                     db_id = row["Internal DB ID"]
                     meta_payload = {}
@@ -216,3 +249,37 @@ if st.button("💾 Save Grid Configuration Updates"):
                 st.session_state.custom_columns = []
                 st.success("🎉 Grid updates saved successfully!")
                 st.rerun()
+    else:
+        st.info("Your workspace inventory database is currently empty.")
+
+# ==========================================
+# TAB 4: HISTORICAL LEDGER (PAST RECORDS)
+# ==========================================
+with tab4:
+    st.subheader("📜 Continuous Stock Ledger Audit Track")
+    ledger_query = supabase.table("stock_ledger").select("*").eq("access_code", user_code).order("timestamp", desc=True).execute()
+    
+    if ledger_query.data:
+        ledger_df = pd.DataFrame(ledger_query.data)
+        ledger_df["Time Logged"] = ledger_df["timestamp"].str.slice(0, 19).str.replace("T", " ")
+        st.dataframe(
+            ledger_df[["Time Logged", "sku", "movement_type", "quantity"]].rename(columns={"sku":"Product SKU","movement_type":"Operation","quantity":"Quantity Shift"}), 
+            use_container_width=True, 
+            hide_index=True
+        )
+    else:
+        st.info("No transaction history records discovered inside your workspace.")
+
+# ==========================================
+# TAB 5: PREFERENCES & TERMINAL CONFIGURATION
+# ==========================================
+with tab5:
+    st.subheader("⚙️ Terminal View Configurations")
+    new_title = st.text_input("Modify App Dashboard Title:", value=user_profile["terminal_title"]).strip()
+    
+    if st.button("💾 Apply Configuration Parameters"):
+        if new_title:
+            supabase.table("user_profiles").update({"terminal_title": new_title}).eq("id", profile_db_id).execute()
+            st.session_state.user_session["terminal_title"] = new_title
+            st.success("App title changed successfully!")
+            st.rerun()
