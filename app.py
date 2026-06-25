@@ -139,7 +139,7 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock Grid", "📜 Audit Ledger", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (UPGRADED MOVEMENT/TRANSFER & BATCH QUEUE)
+# TAB 1: OPERATIONAL TERMINAL (MOVEMENT/TRANSFER & BATCH QUEUE)
 # ==========================================
 with tab1:
     st.subheader("Process Stock Logistics Flow")
@@ -199,10 +199,11 @@ with tab1:
             else:
                 supabase.table("inventory_items").insert({"sku": sku, "item_name": f"Item {sku}", "location": l_to, "quantity": q, "access_code": user_code, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
-            # Write transaction log traces
-            # Instead of TRANSFER_OUT / TRANSFER_IN, use the allowed 'OUT' and 'IN' tags
-                supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
-                supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+            # Write transaction log traces using allowed DB tags
+            supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+            supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+            return True, f"✅ Successfully transferred {q} units of {sku} from {l_from} to {l_to}!"
+            
         else:
             query = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", loc).eq("access_code", user_code).execute()
             final_qty_change = q if movement_type == "IN" else -q
@@ -290,7 +291,6 @@ with tab2:
             df = pd.DataFrame(res.data)
             st.success(f"Discovered {len(df)} corresponding matches across workspace layout channels:")
             for _, row in df.iterrows():
-                # Low Stock Warning indicators active
                 alert_flag = "⚠️ LOW STOCK LEVEL WARNING" if row['quantity'] <= row.get('min_stock', 0) else ""
                 metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
                 st.info(f"📦 **SKU:** `{row['sku']}` | 📍 **Location Matrix:** `{row['location']}` | 🔢 **Quantity:** {row['quantity']} units {alert_flag}{metadata_disp}")
@@ -298,7 +298,7 @@ with tab2:
             st.info("No matching item metrics located within your account group profile filters.")
 
 # ==========================================
-# TAB 3: LIVE STOCK TRACKING & EDITS (COLOR ALERTING & REPORTS EXPORTS)
+# TAB 3: LIVE STOCK TRACKING & EDITS
 # ==========================================
 with tab3:
     st.subheader("Global Control Hub Interface Data Grid")
@@ -317,7 +317,6 @@ with tab3:
                 "Quantity": r["quantity"],
                 "Alert Threshold (Min)": r.get("min_stock", 0)
             }
-            # Inject preference bar column mapping models
             for custom_f in configured_custom_bars:
                 flat_row[custom_f] = ""
             if isinstance(r["metadata"], dict):
@@ -325,11 +324,9 @@ with tab3:
                     flat_row[k] = v
             rows.append(flat_row)
             
-            # Identify system alert levels beforehand
             if r["quantity"] <= r.get("min_stock", 0):
                 low_stock_critical_warnings.append(f"🚨 **SKU {r['sku']}** at Location **{r['location']}** has dropped beneath safety limits! Current level: {r['quantity']} (Min: {r.get('min_stock', 0)})")
         
-        # Render visual warning panels if thresholds are breached
         if low_stock_critical_warnings:
             with st.expander("⚠️ UNRESOLVED SYSTEM BALANCING WARNINGS ALERT PANEL", expanded=True):
                 for alert in low_stock_critical_warnings:
@@ -337,7 +334,6 @@ with tab3:
                     
         base_df = pd.DataFrame(rows)
         
-        # Enforce tracking structures compatibility constraints validation mappings
         for extra_col in configured_custom_bars:
             if extra_col not in base_df.columns: base_df[extra_col] = ""
 
@@ -369,14 +365,13 @@ with tab3:
                     st.rerun()
                     
         with col_exp:
-            # CSV Download Generation Export Tooling Modules
             export_csv_data = base_df.to_csv(index=False).encode('utf-8')
             st.download_button(label="📥 Export Ledger Analysis Data to CSV", data=export_csv_data, file_name=f"WMS_Inventory_Report_{datetime.date.today()}.csv", mime="text/csv")
     else:
         st.info("Your workspace channels contain zero product assets data rows.")
 
 # ==========================================
-# TAB 4: HISTORICAL LEDGER (PAST RECORDS WITH OPERATOR TRACKING)
+# TAB 4: HISTORICAL LEDGER (PAST RECORDS)
 # ==========================================
 with tab4:
     st.subheader("📜 Continuous Stock Ledger Audit Track")
@@ -393,7 +388,6 @@ with tab4:
         )
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # Add Excel/CSV tracking download components for audit reviews
         st.download_button(label="📥 Download Transaction Audit Logs", data=display_df.to_csv(index=False).encode('utf-8'), file_name=f"WMS_Audit_Trail_{datetime.date.today()}.csv", mime="text/csv")
     else:
         st.info("No transaction history records discovered inside your workspace.")
@@ -424,6 +418,7 @@ with tab5:
             }
             supabase.table("user_profiles").update(update_payload).eq("id", profile_db_id).execute()
             
+            # Synchronize localized volatile storage variables 
             st.session_state.user_session["terminal_title"] = new_title
             st.session_state.user_session["authorized_locations"] = parsed_locations
             st.session_state.user_session["custom_data_fields"] = parsed_custom_fields
