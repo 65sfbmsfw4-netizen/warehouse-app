@@ -98,7 +98,7 @@ if st.session_state.user_session is None:
                         "password_hash": hashed_p,
                         "access_code": reg_code,
                         "last_known_ip": current_ip,
-                        "authorized_locations": ["A1", "B1", "C1"], # Default setup
+                        "authorized_locations": ["A1", "B1", "C1"],
                         "custom_data_fields": []
                     }
                     supabase.table("user_profiles").insert(new_user_data).execute()
@@ -111,15 +111,15 @@ if st.session_state.user_session is None:
 user_profile = st.session_state.user_session
 user_code = user_profile["access_code"]
 profile_db_id = user_profile["id"]
+operator_username = user_profile["username"] # Capturing current operator profile name
 
-# Load the user preferences dynamically
 configured_locations = user_profile.get("authorized_locations") or ["A1", "B1", "C1"]
 configured_custom_bars = user_profile.get("custom_data_fields") or []
 
 col_header, col_exit = st.columns([4, 1])
 with col_header:
     st.title(user_profile.get("terminal_title", "Mobile WMS Terminal"))
-    st.caption(f"Operator identity: **{user_profile['username']}** | Channel Context: `{user_code}`")
+    st.caption(f"Operator identity: **{operator_username}** | Channel Context: `{user_code}`")
 with col_exit:
     st.write("") 
     if st.button("🔒 Sign Out"):
@@ -141,10 +141,8 @@ with tab1:
     with col2:
         qty = st.number_input("Quantity:", min_value=1, value=1)
         
-    # 🛠️ Change 2: Location Matrix selection upgraded to a dynamic dropdown selector menu
     location_input = st.selectbox("📍 Location Matrix:", options=configured_locations)
 
-    # 🛠️ Change 3: Generate operational data inputs dynamically based on user preferences fields
     scanned_metadata = {}
     if configured_custom_bars:
         st.markdown("---")
@@ -165,30 +163,31 @@ with tab1:
                 current_qty = existing_records[0]["quantity"]
                 new_qty = current_qty + final_qty_change
                 
-                # Merge existing data payload with newly provided extra bar information inputs
                 current_meta = existing_records[0].get("metadata") or {}
                 if not isinstance(current_meta, dict):
                     current_meta = {}
                 for k, v in scanned_metadata.items():
-                    if v: 
-                        current_meta[k] = v
+                    if v: current_meta[k] = v
 
                 if new_qty < 0:
                     st.error(f"❌ Aborted: Insufficient stock. Current Level: {current_qty}")
                 elif new_qty == 0:
                     supabase.table("inventory_items").delete().eq("id", existing_records[0]["id"]).execute()
-                    supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
+                    # 🛠️ FIXED: Added operator tracking to ledger write
+                    supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code, "operator": operator_username}).execute()
                     st.success("🗑️ Row cleared.")
                 else:
                     supabase.table("inventory_items").update({"quantity": new_qty, "metadata": current_meta, "last_updated": datetime.datetime.now().isoformat()}).eq("id", existing_records[0]["id"]).execute()
-                    supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
+                    # 🛠️ FIXED: Added operator tracking to ledger write
+                    supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code, "operator": operator_username}).execute()
                     st.success(f"✅ Updated Stock! New Total: {new_qty}")
             else:
                 if movement_type == "OUT":
                     st.error("❌ Aborted: Cannot pick an item from a non-existent location.")
                 else:
                     supabase.table("inventory_items").insert({"sku": sku_input, "item_name": f"Item {sku_input}", "location": location_input, "quantity": qty, "metadata": scanned_metadata, "access_code": user_code}).execute()
-                    supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
+                    # 🛠️ FIXED: Added operator tracking to ledger write
+                    supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code, "operator": operator_username}).execute()
                     st.success(f"📦 Created new batch at location: {location_input}!")
 
 # ==========================================
@@ -229,7 +228,6 @@ with tab3:
                 "Location": r["location"],
                 "Quantity": r["quantity"]
             }
-            # Pre-populate custom variables configurations from settings profile
             for custom_f in configured_custom_bars:
                 flat_row[custom_f] = ""
                 
@@ -240,12 +238,10 @@ with tab3:
             
         base_df = pd.DataFrame(rows)
         
-        # Enforce structural adherence to profile-assigned custom info variables columns
         for extra_col in configured_custom_bars:
             if extra_col not in base_df.columns:
                 base_df[extra_col] = ""
 
-        # Temporary columns configuration fallback checker module
         if "custom_columns" not in st.session_state:
             st.session_state.custom_columns = []
         for extra_col in st.session_state.custom_columns:
@@ -292,8 +288,22 @@ with tab4:
     if ledger_query.data:
         ledger_df = pd.DataFrame(ledger_query.data)
         ledger_df["Time Logged"] = ledger_df["timestamp"].str.slice(0, 19).str.replace("T", " ")
+        
+        # Fallback handling for older legacy rows created before this migration field existed
+        if "operator" not in ledger_df.columns:
+            ledger_df["operator"] = "System"
+        ledger_df["operator"] = ledger_df["operator"].fillna("System")
+        
+        # 🛠️ FIXED: Included the new "Operator Identity" column into the display data frame mapping
         st.dataframe(
-            ledger_df[["Time Logged", "sku", "movement_type", "quantity"]].rename(columns={"sku":"Product SKU","movement_type":"Operation","quantity":"Quantity Shift"}), 
+            ledger_df[["Time Logged", "sku", "movement_type", "quantity", "operator"]].rename(
+                columns={
+                    "sku": "Product SKU",
+                    "movement_type": "Operation",
+                    "quantity": "Quantity Shift",
+                    "operator": "Operator Identity"
+                }
+            ), 
             use_container_width=True, 
             hide_index=True
         )
@@ -306,19 +316,16 @@ with tab4:
 with tab5:
     st.subheader("⚙️ Terminal View Configurations")
     
-    # Section A: Terminal Banner Title Control
     new_title = st.text_input("Modify App Dashboard Title:", value=user_profile.get("terminal_title", "Mobile WMS Terminal")).strip()
     
     st.markdown("---")
     
-    # 🛠️ Change 1: Added user configuration manager panel for Location matrix limits lists
     st.subheader("📍 Manage Warehouse Locations Dropdown")
     locations_str = st.text_area("Enter active locations separated by commas:", value=", ".join(configured_locations))
     parsed_locations = [x.strip().upper() for x in locations_str.split(",") if x.strip()]
     
     st.markdown("---")
     
-    # 🛠️ Change 3: Added custom input fields dashboard configuration portal
     st.subheader("📊 Manage Additional Information Bars")
     custom_bars_str = st.text_area("Enter custom data entry fields separated by commas (e.g. Value, Weight, Supplier):", value=", ".join(configured_custom_bars))
     parsed_custom_fields = [x.strip() for x in custom_bars_str.split(",") if x.strip()]
@@ -332,7 +339,6 @@ with tab5:
             }
             supabase.table("user_profiles").update(update_payload).eq("id", profile_db_id).execute()
             
-            # Hot-reload modifications directly into runtime application state
             st.session_state.user_session["terminal_title"] = new_title
             st.session_state.user_session["authorized_locations"] = parsed_locations
             st.session_state.user_session["custom_data_fields"] = parsed_custom_fields
