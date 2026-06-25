@@ -141,7 +141,8 @@ with col_exit:
         st.session_state.batch_queue = []
         st.rerun()
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock Grid", "📜 Audit Ledger", "⚙️ Preferences"])
+# [Wording Change 8, 9] Tab Layout Labels Updated
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
 # TAB 1: OPERATIONAL TERMINAL
@@ -153,15 +154,21 @@ with tab1:
     
     st.markdown("---")
     
-    sku_or_stream = st.text_area("📋 Enter SKU Code or Scan Continuous Barcode Stream (use commas to separate context, e.g., apple, apple):", key="wms_unified_input_bar").strip()
+    # --- FIXED: SEPARATED SUB-INPUT ENTRIES ---
+    if op_mode == "Single Entry":
+        sku_input = st.text_input("📋 Enter SKU Code:", key="wms_single_input_bar").strip()
+    else:
+        sku_stream = st.text_area("📋 Scan Continuous Barcode Stream (use commas to separate, e.g., apple, apple):", key="wms_multiple_input_bar").strip()
     
     col_dir, col_qt = st.columns(2)
     with col_dir:
-        action = st.radio("Action Assignment Type:", ["IN (Receive Stock)", "OUT (Pick Stock)", "TRANSFER (Relocate Matrix)"])
+        # [Wording Change 1, 6] Label changed to Action; Removed details behind IN, OUT, TRANSFER
+        action = st.radio("Action:", ["IN", "OUT", "TRANSFER"])
     with col_qt:
-        qty = st.number_input("Base Transaction Quantity Factor:", min_value=1, value=1)
+        # [Wording Change 2] Label changed to Quantity
+        qty = st.number_input("Quantity:", min_value=1, value=1)
         
-    if action == "TRANSFER (Relocate Matrix)":
+    if action == "TRANSFER":
         col_f, col_t = st.columns(2)
         with col_f:
             loc_from = st.selectbox("Source Location (FROM):", options=configured_locations, key="src_loc")
@@ -169,11 +176,12 @@ with tab1:
         with col_t:
             loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc")
     else:
-        location_input = st.selectbox("Target Warehouse Location Matrix:", options=configured_locations)
+        # [Wording Change 3] Label changed to Location
+        location_input = st.selectbox("Location:", options=configured_locations)
         loc_from, loc_to = None, None
 
     scanned_metadata = {}
-    if configured_custom_bars and action != "TRANSFER (Relocate Matrix)":
+    if configured_custom_bars and action != "TRANSFER":
         st.caption("📝 Transaction Extra Attributes Payload:")
         for bar_field in configured_custom_bars:
             scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_m_{bar_field}").strip()
@@ -237,22 +245,23 @@ with tab1:
     # --- EXECUTION BUTTON ROUTER CORES ---
     if op_mode == "Single Entry":
         if st.button("🚀 Commit Direct Single Transaction"):
-            if not sku_or_stream:
+            if not sku_input:
                 st.warning("SKU entry identifier string required.")
-            elif "," in sku_or_stream:
+            elif "," in sku_input:
                 st.error("Detecting tokens structure. Please navigate to Multiple Entry Mode to run comma separated scanner chains.")
             else:
-                success, msg = execute_transaction(sku_or_stream, action, qty, location_input, loc_from, loc_to, scanned_metadata)
+                success, msg = execute_transaction(sku_input, action, qty, location_input, loc_from, loc_to, scanned_metadata)
                 if success: st.success(msg)
                 else: st.error(msg)
     else:
         col_queue, col_clear = st.columns(2)
         with col_queue:
-            if st.button("📥 Parse and Queue Scanned Assets"):
-                if not sku_or_stream:
+            # [Wording Change 4] Label changed to Check scanned
+            if st.button("📥 Check scanned"):
+                if not sku_stream:
                     st.warning("Provide item tracking parameters inside the top entry field input.")
                 else:
-                    raw_tokens = sku_or_stream.split(",")
+                    raw_tokens = sku_stream.split(",")
                     parsed_skus = [token.strip() for token in raw_tokens if token.strip()]
                     
                     for scanned_sku in parsed_skus:
@@ -262,7 +271,8 @@ with tab1:
                         })
                     st.toast(f"Parsed and added {len(parsed_skus)} item entries to execution layout queue staging table.")
         with col_clear:
-            if st.button("🗑️ Reset Pending Staged Queue Table"):
+            # [Wording Change 5] Label changed to Reset scanned
+            if st.button("🗑️ Reset scanned"):
                 st.session_state.batch_queue = []
                 st.rerun()
         
@@ -275,9 +285,6 @@ with tab1:
             
             if st.button("🏁 Execute Entire Multiple Entry Batch Sequence"):
                 queue_df = pd.DataFrame(st.session_state.batch_queue)
-                
-                # --- FIXED: ROBUST CONSOLIDATION MATCH FIELDS ---
-                # Group strictly by existing identifiers to prevent dropping IN/OUT records
                 consolidated_tasks = queue_df.groupby(["sku", "action", "location"]).size().reset_index(name="scanned_count")
                 
                 success_count, fail_count = 0, 0
@@ -286,12 +293,10 @@ with tab1:
                     act = row_task["action"]
                     loc = row_task["location"]
                     
-                    # Safely recover matching row parameters
                     match_slice = queue_df[(queue_df["sku"] == sku) & (queue_df["action"] == act) & (queue_df["location"] == loc)].iloc[0]
                     base_qty_factor = match_slice["qty"]
                     meta_payload = match_slice["metadata"]
                     
-                    # Safely pull transit routing context if it was a TRANSFER type run
                     l_from = match_slice["loc_from"] if pd.notna(match_slice["loc_from"]) else None
                     l_to = match_slice["loc_to"] if pd.notna(match_slice["loc_to"]) else None
                     
@@ -312,7 +317,8 @@ with tab1:
 # TAB 2: SMART FINDER
 # ==========================================
 with tab2:
-    st.subheader("Fuzzy Search Inventory Indexes")
+    # [Wording Change 7] Header text altered to Search Inventory
+    st.subheader("Search Inventory")
     search_sku = st.text_input("🔍 Search SKU:").strip()
     
     if search_sku:
@@ -333,7 +339,8 @@ with tab2:
 # TAB 3: LIVE STOCK TRACKING & EDITS
 # ==========================================
 with tab3:
-    st.subheader("Global Control Hub Interface Data Grid")
+    # [Wording Change 10] Header text altered to Control Interface Data
+    st.subheader("Control Interface Data")
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
     
     if all_items.data:
