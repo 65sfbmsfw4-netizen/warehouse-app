@@ -4,7 +4,7 @@ from supabase import create_client, Client
 import datetime
 import urllib.request
 import hashlib
-from zoneinfo import ZoneInfo  # Python built-in timezone library
+from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layout="centered")
 
@@ -31,7 +31,6 @@ except Exception as e:
     st.stop()
 
 # --- TIMEZONE DETECTION ENGINE ---
-# Detect user browser timezone automatically, fallback to UTC if undetected
 user_tz_str = st.context.timezone or "UTC"
 user_tz = ZoneInfo(user_tz_str)
 
@@ -154,7 +153,7 @@ with tab1:
     
     st.markdown("---")
     
-    # Input line returned to the top context tier row
+    # Unified input area at the first tier row
     sku_or_stream = st.text_area("📋 Enter SKU Code or Scan Continuous Barcode Stream (use commas to separate context, e.g., apple, apple):", key="wms_unified_input_bar").strip()
     
     col_dir, col_qt = st.columns(2)
@@ -174,7 +173,6 @@ with tab1:
         location_input = st.selectbox("Target Warehouse Location Matrix:", options=configured_locations)
         loc_from, loc_to = None, None
 
-    # Gather additional metadata configuration profiles attributes
     scanned_metadata = {}
     if configured_custom_bars and action != "TRANSFER (Relocate Matrix)":
         st.caption("📝 Transaction Extra Attributes Payload:")
@@ -277,14 +275,38 @@ with tab1:
             st.dataframe(display_grouping, use_container_width=True, hide_index=True)
             
             if st.button("🏁 Execute Entire Multiple Entry Batch Sequence"):
+                # --- FIXED: CONSOLIDATION LOGIC FOR MULTIPLE ENTRY BATCHES ---
+                # Convert list to DataFrame to compress duplicate records into unified shifts
+                queue_df = pd.DataFrame(st.session_state.batch_queue)
+                
+                # Group by exact operational match keys, then sum the total units processed
+                # This guarantees one grouped row per item/action matrix block inside the audit track
+                consolidated_tasks = queue_df.groupby(["sku", "action", "location", "loc_from", "loc_to"]).size().reset_index(name="scanned_count")
+                
                 success_count, fail_count = 0, 0
-                for task in st.session_state.batch_queue:
-                    ok, res_msg = execute_transaction(task["sku"], task["action"], task["qty"], task["location"], task["loc_from"], task["loc_to"], task["metadata"])
-                    if ok: success_count += 1
+                for _, row_task in consolidated_tasks.iterrows():
+                    sku = row_task["sku"]
+                    act = row_task["action"]
+                    loc = row_task["location"]
+                    l_from = row_task["loc_from"] if pd.notna(row_task["loc_from"]) else None
+                    l_to = row_task["loc_to"] if pd.notna(row_task["loc_to"]) else None
+                    
+                    # Fetch original base quantity scalar metadata assignment rules context payload matches
+                    orig_match = queue_df[(queue_df["sku"] == sku) & (queue_df["action"] == act) & (queue_df["location"] == loc)].iloc[0]
+                    base_qty_factor = orig_match["qty"]
+                    meta_payload = orig_match["metadata"]
+                    
+                    # Consolidated total run amount calculation
+                    total_consolidated_qty = int(row_task["scanned_count"] * base_qty_factor)
+                    
+                    ok, res_msg = execute_transaction(sku, act, total_consolidated_qty, loc, l_from, l_to, meta_payload)
+                    if ok:
+                        success_count += 1
                     else:
                         st.error(res_msg)
                         fail_count += 1
-                st.success(f"Processing sequence complete! Successful syncs: {success_count} | Aborted runs: {fail_count}")
+                        
+                st.success(f"Processing sequence complete! Consolidated Synced Groups: {success_count} | Aborted runs: {fail_count}")
                 st.session_state.batch_queue = []
                 st.rerun()
 
@@ -392,11 +414,8 @@ with tab4:
     if ledger_query.data:
         ledger_df = pd.DataFrame(ledger_query.data)
         
-        # --- LOCAL TIME CONVERSION ENGINE ---
-        # Parse Supabase's incoming string into true localized timezone stamps 
         def localize_timestamp(ts_str):
             try:
-                # Truncate and parse the timestamp string cleanly
                 clean_ts = ts_str.split("+")[0].split(".")[0]
                 utc_dt = datetime.datetime.strptime(clean_ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
                 local_dt = utc_dt.astimezone(user_tz)
