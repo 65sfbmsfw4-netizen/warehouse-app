@@ -4,6 +4,7 @@ from supabase import create_client, Client
 import datetime
 import urllib.request
 import hashlib
+from zoneinfo import ZoneInfo  # Python built-in timezone library
 
 st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layout="centered")
 
@@ -28,6 +29,11 @@ try:
 except Exception as e:
     st.error("Database connection failure. Please review credentials.")
     st.stop()
+
+# --- TIMEZONE DETECTION ENGINE ---
+# Detect user browser timezone automatically, fallback to UTC if undetected
+user_tz_str = st.context.timezone or "UTC"
+user_tz = ZoneInfo(user_tz_str)
 
 # --- HELPER SECURITY UTILITIES ---
 def hash_password(password: str) -> str:
@@ -127,7 +133,7 @@ configured_custom_bars = user_profile.get("custom_data_fields") or []
 col_header, col_exit = st.columns([4, 1])
 with col_header:
     st.title(user_profile.get("terminal_title", "Mobile WMS Terminal"))
-    st.caption(f"Operator identity: **{operator_username}** | Channel Context: `{user_code}`")
+    st.caption(f"Operator identity: **{operator_username}** | Zone Context: `{user_tz_str}`")
 with col_exit:
     st.write("") 
     if st.button("🔒 Sign Out"):
@@ -139,17 +145,16 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock Grid", "📜 Audit Ledger", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (UPDATED LAYOUT ENGINE)
+# TAB 1: OPERATIONAL TERMINAL
 # ==========================================
 with tab1:
     st.subheader("Process Stock Logistics Flow")
     
-    # 🛠️ RENAMED: Mode selection row
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
     
     st.markdown("---")
     
-    # 📍 RESTORED: Input line returned to the top context tier row
+    # Input line returned to the top context tier row
     sku_or_stream = st.text_area("📋 Enter SKU Code or Scan Continuous Barcode Stream (use commas to separate context, e.g., apple, apple):", key="wms_unified_input_bar").strip()
     
     col_dir, col_qt = st.columns(2)
@@ -180,6 +185,7 @@ with tab1:
     def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None):
         if meta is None: meta = {}
         movement_type = "IN" if "IN" in act else "OUT" if "OUT" in act else "TRANSFER"
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
         if movement_type == "TRANSFER":
             src_q = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", l_from).eq("access_code", user_code).eq("is_archived", False).execute()
@@ -195,7 +201,7 @@ with tab1:
             dst_q = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", l_to).eq("access_code", user_code).execute()
             if dst_q.data:
                 new_dst_q = dst_q.data[0]["quantity"] + q
-                supabase.table("inventory_items").update({"quantity": new_dst_q, "is_archived": False, "last_updated": datetime.datetime.now().isoformat()}).eq("id", dst_q.data[0]["id"]).execute()
+                supabase.table("inventory_items").update({"quantity": new_dst_q, "is_archived": False, "last_updated": now_iso}).eq("id", dst_q.data[0]["id"]).execute()
             else:
                 supabase.table("inventory_items").insert({"sku": sku, "item_name": f"Item {sku}", "location": l_to, "quantity": q, "access_code": user_code, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
@@ -220,7 +226,7 @@ with tab1:
                     return False, f"❌ Aborted '{sku}': Insufficient levels inside system matrix storage path. Available: {current_qty}"
                 
                 is_archived_flag = True if new_qty == 0 else False
-                supabase.table("inventory_items").update({"quantity": new_qty, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": datetime.datetime.now().isoformat()}).eq("id", record["id"]).execute()
+                supabase.table("inventory_items").update({"quantity": new_qty, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": now_iso}).eq("id", record["id"]).execute()
                 supabase.table("stock_ledger").insert({"sku": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
                 return True, f"✅ Sync operation complete for {sku}! Revised Total Balance: {new_qty}"
             else:
@@ -263,7 +269,6 @@ with tab1:
                 st.session_state.batch_queue = []
                 st.rerun()
         
-        # Render staging summary calculations matrices if workspace array registers contain counts
         if st.session_state.batch_queue:
             st.markdown("---")
             st.markdown("### 📋 Staged Group Manifest Grid Details:")
@@ -284,11 +289,11 @@ with tab1:
                 st.rerun()
 
 # ==========================================
-# TAB 2: SMART FINDER (PARTIAL WILD CARD MATCHING)
+# TAB 2: SMART FINDER
 # ==========================================
 with tab2:
     st.subheader("Fuzzy Search Inventory Indexes")
-    search_sku = st.text_input("🔍 Search SKU (Fuzzy partial lookup mapping logic active):").strip()
+    search_sku = st.text_input("🔍 Search SKU:").strip()
     
     if search_sku:
         wildcard_search = f"%{search_sku}%"
@@ -296,13 +301,13 @@ with tab2:
         
         if res.data:
             df = pd.DataFrame(res.data)
-            st.success(f"Discovered {len(df)} corresponding matches across workspace layout channels:")
+            st.success(f"Discovered {len(df)} corresponding matches:")
             for _, row in df.iterrows():
                 alert_flag = "⚠️ LOW STOCK LEVEL WARNING" if row['quantity'] <= row.get('min_stock', 0) else ""
                 metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
                 st.info(f"📦 **SKU:** `{row['sku']}` | 📍 **Location Matrix:** `{row['location']}` | 🔢 **Quantity:** {row['quantity']} units {alert_flag}{metadata_disp}")
         else:
-            st.info("No matching item metrics located within your account group profile filters.")
+            st.info("No matching item metrics located.")
 
 # ==========================================
 # TAB 3: LIVE STOCK TRACKING & EDITS
@@ -365,7 +370,7 @@ with tab3:
                             "quantity": int(row["Quantity"]),
                             "min_stock": int(row["Alert Threshold (Min)"]),
                             "metadata": meta_payload,
-                            "last_updated": datetime.datetime.now().isoformat()
+                            "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
                         }
                         supabase.table("inventory_items").update(update_data).eq("id", db_id).execute()
                     st.success("🎉 Interface dashboard parameters synchronized cleanly!")
@@ -378,7 +383,7 @@ with tab3:
         st.info("Your workspace channels contain zero product assets data rows.")
 
 # ==========================================
-# TAB 4: HISTORICAL LEDGER (PAST RECORDS)
+# TAB 4: HISTORICAL LEDGER (LOCALIZED TIME ENGINE)
 # ==========================================
 with tab4:
     st.subheader("📜 Continuous Stock Ledger Audit Track")
@@ -386,7 +391,21 @@ with tab4:
     
     if ledger_query.data:
         ledger_df = pd.DataFrame(ledger_query.data)
-        ledger_df["Time Logged"] = ledger_df["timestamp"].str.slice(0, 19).str.replace("T", " ")
+        
+        # --- LOCAL TIME CONVERSION ENGINE ---
+        # Parse Supabase's incoming string into true localized timezone stamps 
+        def localize_timestamp(ts_str):
+            try:
+                # Truncate and parse the timestamp string cleanly
+                clean_ts = ts_str.split("+")[0].split(".")[0]
+                utc_dt = datetime.datetime.strptime(clean_ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+                local_dt = utc_dt.astimezone(user_tz)
+                return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return ts_str[:19].replace("T", " ")
+
+        ledger_df["Time Logged"] = ledger_df["timestamp"].apply(localize_timestamp)
+        
         if "operator" not in ledger_df.columns: ledger_df["operator"] = "System Trace"
         ledger_df["operator"] = ledger_df["operator"].fillna("System Trace")
         
