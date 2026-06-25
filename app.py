@@ -153,7 +153,6 @@ with tab1:
     
     st.markdown("---")
     
-    # Unified input area at the first tier row
     sku_or_stream = st.text_area("📋 Enter SKU Code or Scan Continuous Barcode Stream (use commas to separate context, e.g., apple, apple):", key="wms_unified_input_bar").strip()
     
     col_dir, col_qt = st.columns(2)
@@ -275,28 +274,27 @@ with tab1:
             st.dataframe(display_grouping, use_container_width=True, hide_index=True)
             
             if st.button("🏁 Execute Entire Multiple Entry Batch Sequence"):
-                # --- FIXED: CONSOLIDATION LOGIC FOR MULTIPLE ENTRY BATCHES ---
-                # Convert list to DataFrame to compress duplicate records into unified shifts
                 queue_df = pd.DataFrame(st.session_state.batch_queue)
                 
-                # Group by exact operational match keys, then sum the total units processed
-                # This guarantees one grouped row per item/action matrix block inside the audit track
-                consolidated_tasks = queue_df.groupby(["sku", "action", "location", "loc_from", "loc_to"]).size().reset_index(name="scanned_count")
+                # --- FIXED: ROBUST CONSOLIDATION MATCH FIELDS ---
+                # Group strictly by existing identifiers to prevent dropping IN/OUT records
+                consolidated_tasks = queue_df.groupby(["sku", "action", "location"]).size().reset_index(name="scanned_count")
                 
                 success_count, fail_count = 0, 0
                 for _, row_task in consolidated_tasks.iterrows():
                     sku = row_task["sku"]
                     act = row_task["action"]
                     loc = row_task["location"]
-                    l_from = row_task["loc_from"] if pd.notna(row_task["loc_from"]) else None
-                    l_to = row_task["loc_to"] if pd.notna(row_task["loc_to"]) else None
                     
-                    # Fetch original base quantity scalar metadata assignment rules context payload matches
-                    orig_match = queue_df[(queue_df["sku"] == sku) & (queue_df["action"] == act) & (queue_df["location"] == loc)].iloc[0]
-                    base_qty_factor = orig_match["qty"]
-                    meta_payload = orig_match["metadata"]
+                    # Safely recover matching row parameters
+                    match_slice = queue_df[(queue_df["sku"] == sku) & (queue_df["action"] == act) & (queue_df["location"] == loc)].iloc[0]
+                    base_qty_factor = match_slice["qty"]
+                    meta_payload = match_slice["metadata"]
                     
-                    # Consolidated total run amount calculation
+                    # Safely pull transit routing context if it was a TRANSFER type run
+                    l_from = match_slice["loc_from"] if pd.notna(match_slice["loc_from"]) else None
+                    l_to = match_slice["loc_to"] if pd.notna(match_slice["loc_to"]) else None
+                    
                     total_consolidated_qty = int(row_task["scanned_count"] * base_qty_factor)
                     
                     ok, res_msg = execute_transaction(sku, act, total_consolidated_qty, loc, l_from, l_to, meta_payload)
