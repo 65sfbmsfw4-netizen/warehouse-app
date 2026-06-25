@@ -171,17 +171,27 @@ with tab1:
 # ==========================================
 # TAB 2: CASE-INSENSITIVE SEARCH
 # ==========================================
+# ==========================================
+# TAB 2: CASE-INSENSITIVE SEARCH (WILDCARD)
+# ==========================================
 with tab2:
     st.subheader("Smart SKU Finder")
-    search_sku = st.text_input("🔍 Search SKU (Case Insensitive):").strip()
+    search_sku = st.text_input("🔍 Search SKU (Partial Matching Active):").strip()
     
     if search_sku:
-        res = supabase.table("inventory_items").select("*").ilike("sku", search_sku).eq("access_code", user_code).execute()
+        # 🛠️ FIXED: Wrapped search_sku in '%' characters to activate fuzzy/partial matching
+        wildcard_search = f"%{search_sku}%"
+        
+        res = supabase.table("inventory_items").select("*").ilike("sku", wildcard_search).eq("access_code", user_code).execute()
+        
         if res.data:
             df = pd.DataFrame(res.data)
+            st.success(f"Found {len(df)} matching item trace(s) in your workspace:")
+            
             for _, row in df.iterrows():
                 metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
-                st.info(f"📍 **Location:** `{row['location']}` | 🔢 **Stock:** {row['quantity']} units{metadata_disp}")
+                # Highlighting the matched SKU for the mobile user
+                st.info(f"📦 **SKU:** `{row['sku']}` | 📍 **Location:** `{row['location']}` | 🔢 **Stock:** {row['quantity']} units{metadata_disp}")
         else:
             st.info("No matching item inventory trace located in your workspace.")
 
