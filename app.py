@@ -200,10 +200,9 @@ with tab1:
                 supabase.table("inventory_items").insert({"sku": sku, "item_name": f"Item {sku}", "location": l_to, "quantity": q, "access_code": user_code, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
             # Write transaction log traces
-            supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "TRANSFER_OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
-            supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "TRANSFER_IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
-            return True, f"✅ Successfully transferred {q} units of {sku} from {l_from} to {l_to}!"
-            
+            # Instead of TRANSFER_OUT / TRANSFER_IN, use the allowed 'OUT' and 'IN' tags
+                supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+                supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
         else:
             query = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", loc).eq("access_code", user_code).execute()
             final_qty_change = q if movement_type == "IN" else -q
