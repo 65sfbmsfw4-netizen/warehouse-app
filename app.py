@@ -10,8 +10,8 @@ st.markdown("<style>.stButton>button { width: 100%; height: 50px; font-size: 16p
 
 # --- SECURE SUPABASE CONNECTION CONFIGURATION ---
 # Safely reading from Streamlit's hidden cloud secrets settings
-SUPABASE_URL = "https://nnkxlobacrvfcisnaazf.supabase.co"
-SUPABASE_KEY = "sb_publishable_PqVWQyb9xcCysxxx93UJMA_G-g3LQHS"
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 @st.cache_resource
 def init_connection():
@@ -64,7 +64,6 @@ if st.session_state.user_session is None:
         if st.button("🔑 Log In to Workspace"):
             if login_user and login_pass:
                 target_hash = hash_password(login_pass)
-                # 🛠️ FIXED: Changed .eq to .ilike for case-insensitive login matching
                 user_query = supabase.table("user_profiles").select("*").ilike("username", login_user).eq("password_hash", target_hash).execute()
                 
                 if user_query.data:
@@ -89,7 +88,6 @@ if st.session_state.user_session is None:
             if not reg_user or not reg_pass or not reg_code:
                 st.warning("All verification and creation forms require completion inputs.")
             else:
-                # 🛠️ FIXED: Changed .eq to .ilike so users can't bypass duplicate checks with weird capitalization
                 check_dup = supabase.table("user_profiles").select("username").ilike("username", reg_user).execute()
                 if check_dup.data:
                     st.error("That account identity username is already claimed.")
@@ -99,7 +97,9 @@ if st.session_state.user_session is None:
                         "username": reg_user,
                         "password_hash": hashed_p,
                         "access_code": reg_code,
-                        "last_known_ip": current_ip
+                        "last_known_ip": current_ip,
+                        "authorized_locations": ["A1", "B1", "C1"], # Default setup
+                        "custom_data_fields": []
                     }
                     supabase.table("user_profiles").insert(new_user_data).execute()
                     st.success("Account constructed cleanly! Please toggle to Sign In to lock in authorization access.")
@@ -112,9 +112,13 @@ user_profile = st.session_state.user_session
 user_code = user_profile["access_code"]
 profile_db_id = user_profile["id"]
 
+# Load the user preferences dynamically
+configured_locations = user_profile.get("authorized_locations") or ["A1", "B1", "C1"]
+configured_custom_bars = user_profile.get("custom_data_fields") or []
+
 col_header, col_exit = st.columns([4, 1])
 with col_header:
-    st.title(user_profile["terminal_title"])
+    st.title(user_profile.get("terminal_title", "Mobile WMS Terminal"))
     st.caption(f"Operator identity: **{user_profile['username']}** | Channel Context: `{user_code}`")
 with col_exit:
     st.write("") 
@@ -136,7 +140,17 @@ with tab1:
         action = st.radio("Movement Direction:", ["IN (Receive)", "OUT (Pick)"])
     with col2:
         qty = st.number_input("Quantity:", min_value=1, value=1)
-    location_input = st.text_input("📍 Location Matrix:").strip().upper()
+        
+    # 🛠️ Change 2: Location Matrix selection upgraded to a dynamic dropdown selector menu
+    location_input = st.selectbox("📍 Location Matrix:", options=configured_locations)
+
+    # 🛠️ Change 3: Generate operational data inputs dynamically based on user preferences fields
+    scanned_metadata = {}
+    if configured_custom_bars:
+        st.markdown("---")
+        st.caption("📝 Additional Custom Attributes Entry:")
+        for bar_field in configured_custom_bars:
+            scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_meta_{bar_field}").strip()
 
     if st.button("🚀 Commit Transaction to Database"):
         if not sku_input or not location_input:
@@ -150,6 +164,15 @@ with tab1:
             if existing_records:
                 current_qty = existing_records[0]["quantity"]
                 new_qty = current_qty + final_qty_change
+                
+                # Merge existing data payload with newly provided extra bar information inputs
+                current_meta = existing_records[0].get("metadata") or {}
+                if not isinstance(current_meta, dict):
+                    current_meta = {}
+                for k, v in scanned_metadata.items():
+                    if v: 
+                        current_meta[k] = v
+
                 if new_qty < 0:
                     st.error(f"❌ Aborted: Insufficient stock. Current Level: {current_qty}")
                 elif new_qty == 0:
@@ -157,20 +180,17 @@ with tab1:
                     supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
                     st.success("🗑️ Row cleared.")
                 else:
-                    supabase.table("inventory_items").update({"quantity": new_qty, "last_updated": datetime.datetime.now().isoformat()}).eq("id", existing_records[0]["id"]).execute()
+                    supabase.table("inventory_items").update({"quantity": new_qty, "metadata": current_meta, "last_updated": datetime.datetime.now().isoformat()}).eq("id", existing_records[0]["id"]).execute()
                     supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
                     st.success(f"✅ Updated Stock! New Total: {new_qty}")
             else:
                 if movement_type == "OUT":
                     st.error("❌ Aborted: Cannot pick an item from a non-existent location.")
                 else:
-                    supabase.table("inventory_items").insert({"sku": sku_input, "item_name": f"Item {sku_input}", "location": location_input, "quantity": qty, "access_code": user_code}).execute()
+                    supabase.table("inventory_items").insert({"sku": sku_input, "item_name": f"Item {sku_input}", "location": location_input, "quantity": qty, "metadata": scanned_metadata, "access_code": user_code}).execute()
                     supabase.table("stock_ledger").insert({"sku": sku_input, "movement_type": movement_type, "quantity": qty, "access_code": user_code}).execute()
                     st.success(f"📦 Created new batch at location: {location_input}!")
 
-# ==========================================
-# TAB 2: CASE-INSENSITIVE SEARCH
-# ==========================================
 # ==========================================
 # TAB 2: CASE-INSENSITIVE SEARCH (WILDCARD)
 # ==========================================
@@ -179,9 +199,7 @@ with tab2:
     search_sku = st.text_input("🔍 Search SKU (Partial Matching Active):").strip()
     
     if search_sku:
-        # 🛠️ FIXED: Wrapped search_sku in '%' characters to activate fuzzy/partial matching
         wildcard_search = f"%{search_sku}%"
-        
         res = supabase.table("inventory_items").select("*").ilike("sku", wildcard_search).eq("access_code", user_code).execute()
         
         if res.data:
@@ -190,7 +208,6 @@ with tab2:
             
             for _, row in df.iterrows():
                 metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
-                # Highlighting the matched SKU for the mobile user
                 st.info(f"📦 **SKU:** `{row['sku']}` | 📍 **Location:** `{row['location']}` | 🔢 **Stock:** {row['quantity']} units{metadata_disp}")
         else:
             st.info("No matching item inventory trace located in your workspace.")
@@ -212,6 +229,10 @@ with tab3:
                 "Location": r["location"],
                 "Quantity": r["quantity"]
             }
+            # Pre-populate custom variables configurations from settings profile
+            for custom_f in configured_custom_bars:
+                flat_row[custom_f] = ""
+                
             if isinstance(r["metadata"], dict):
                 for k, v in r["metadata"].items():
                     flat_row[k] = v
@@ -219,15 +240,14 @@ with tab3:
             
         base_df = pd.DataFrame(rows)
         
-        with st.expander("🛠️ Column Management Tools"):
-            new_col_name = st.text_input("Enter New Custom Column Name:").strip()
-            if "custom_columns" not in st.session_state:
-                st.session_state.custom_columns = []
-            if st.button("➕ Inject Custom Attribute Column"):
-                if new_col_name and new_col_name not in base_df.columns and new_col_name not in st.session_state.custom_columns:
-                    st.session_state.custom_columns.append(new_col_name)
-                    st.rerun()
+        # Enforce structural adherence to profile-assigned custom info variables columns
+        for extra_col in configured_custom_bars:
+            if extra_col not in base_df.columns:
+                base_df[extra_col] = ""
 
+        # Temporary columns configuration fallback checker module
+        if "custom_columns" not in st.session_state:
+            st.session_state.custom_columns = []
         for extra_col in st.session_state.custom_columns:
             if extra_col not in base_df.columns:
                 base_df[extra_col] = ""
@@ -285,11 +305,37 @@ with tab4:
 # ==========================================
 with tab5:
     st.subheader("⚙️ Terminal View Configurations")
-    new_title = st.text_input("Modify App Dashboard Title:", value=user_profile["terminal_title"]).strip()
+    
+    # Section A: Terminal Banner Title Control
+    new_title = st.text_input("Modify App Dashboard Title:", value=user_profile.get("terminal_title", "Mobile WMS Terminal")).strip()
+    
+    st.markdown("---")
+    
+    # 🛠️ Change 1: Added user configuration manager panel for Location matrix limits lists
+    st.subheader("📍 Manage Warehouse Locations Dropdown")
+    locations_str = st.text_area("Enter active locations separated by commas:", value=", ".join(configured_locations))
+    parsed_locations = [x.strip().upper() for x in locations_str.split(",") if x.strip()]
+    
+    st.markdown("---")
+    
+    # 🛠️ Change 3: Added custom input fields dashboard configuration portal
+    st.subheader("📊 Manage Additional Information Bars")
+    custom_bars_str = st.text_area("Enter custom data entry fields separated by commas (e.g. Value, Weight, Supplier):", value=", ".join(configured_custom_bars))
+    parsed_custom_fields = [x.strip() for x in custom_bars_str.split(",") if x.strip()]
     
     if st.button("💾 Apply Configuration Parameters"):
-        if new_title:
-            supabase.table("user_profiles").update({"terminal_title": new_title}).eq("id", profile_db_id).execute()
+        if new_title and parsed_locations:
+            update_payload = {
+                "terminal_title": new_title,
+                "authorized_locations": parsed_locations,
+                "custom_data_fields": parsed_custom_fields
+            }
+            supabase.table("user_profiles").update(update_payload).eq("id", profile_db_id).execute()
+            
+            # Hot-reload modifications directly into runtime application state
             st.session_state.user_session["terminal_title"] = new_title
-            st.success("App title changed successfully!")
+            st.session_state.user_session["authorized_locations"] = parsed_locations
+            st.session_state.user_session["custom_data_fields"] = parsed_custom_fields
+            
+            st.success("Preferences saved successfully across your corporate account channel context!")
             st.rerun()
