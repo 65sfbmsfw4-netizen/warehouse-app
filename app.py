@@ -190,19 +190,29 @@ with tab2:
 # ==========================================
 # TAB 3: LIVE STOCK TRACKING & EDITS
 # ==========================================
-with tab3:
-    st.subheader("Global Inventory Grid Management")
-    all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).order("location", desc=False).execute()
-    
-    if all_items.data:
-        rows = []
-        for r in all_items.data:
-            flat_row = {
-                "Internal DB ID": r["id"],
-                "SKU": r["sku"],
-                "Item Name": r["item_name"],
-                "Location": r["location"],
-                "Quantity": r["quantity"]
-            }
-            if isinstance(r["metadata"], dict):
-                for
+if st.button("💾 Save Grid Configuration Updates"):
+            with st.spinner("Synchronizing batch edits..."):
+                fixed_sys_cols = ["Internal DB ID", "SKU", "Item Name", "Location", "Quantity"]
+                
+                # 🛠️ FIXED: Indentation reset cleanly for the active row loop iteration
+                for idx, row in edited_df.iterrows():
+                    db_id = row["Internal DB ID"]
+                    meta_payload = {}
+                    
+                    for col in edited_df.columns:
+                        if col not in fixed_sys_cols and pd.notna(row[col]) and str(row[col]).strip() != "":
+                            meta_payload[col] = str(row[col])
+                            
+                    update_data = {
+                        "sku": str(row["SKU"]),
+                        "item_name": str(row["Item Name"]),
+                        "location": str(row["Location"]),
+                        "quantity": int(row["Quantity"]),
+                        "metadata": meta_payload,
+                        "last_updated": datetime.datetime.now().isoformat()
+                    }
+                    supabase.table("inventory_items").update(update_data).eq("id", db_id).execute()
+                    
+                st.session_state.custom_columns = []
+                st.success("🎉 Grid updates saved successfully!")
+                st.rerun()
