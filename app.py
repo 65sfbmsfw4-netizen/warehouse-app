@@ -139,21 +139,22 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock Grid", "📜 Audit Ledger", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (MOVEMENT/TRANSFER & BATCH QUEUE)
+# TAB 1: OPERATIONAL TERMINAL (UPGRADED SINGLE / MULTIPLE ENTRY SCANNER ENGINE)
 # ==========================================
 with tab1:
     st.subheader("Process Stock Logistics Flow")
     
-    op_mode = st.radio("Logistics Action Mode:", ["Single Flow Control", "Live Batch Queue Engine"], horizontal=True)
+    op_mode = st.radio("Logistics Action Mode:", ["Single Flow Control", "Multiple Entry"], horizontal=True)
     
     st.markdown("---")
-    sku_input = st.text_input("📋 Enter, Scan, or Type SKU Code:").strip()
     
+    # Render operational parameters
     col_dir, col_qt = st.columns(2)
     with col_dir:
         action = st.radio("Action Assignment Type:", ["IN (Receive Stock)", "OUT (Pick Stock)", "TRANSFER (Relocate Matrix)"])
     with col_qt:
-        qty = st.number_input("Transaction Quantity Factor:", min_value=1, value=1)
+        # Multi-entry scales automatically via scanners, so basic quantity applies principally to Single Control
+        qty = st.number_input("Base Transaction Quantity Factor:", min_value=1, value=1)
         
     if action == "TRANSFER (Relocate Matrix)":
         col_f, col_t = st.columns(2)
@@ -173,25 +174,22 @@ with tab1:
         for bar_field in configured_custom_bars:
             scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_m_{bar_field}").strip()
 
-    # Core engine function handling single execution commands
+    # Core engine transaction router
     def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None):
         if meta is None: meta = {}
         movement_type = "IN" if "IN" in act else "OUT" if "OUT" in act else "TRANSFER"
         
         if movement_type == "TRANSFER":
-            # Verify inventory levels exist at source
             src_q = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", l_from).eq("access_code", user_code).eq("is_archived", False).execute()
             if not src_q.data or src_q.data[0]["quantity"] < q:
                 return False, f"❌ Aborted '{sku}': Insufficient quantities inside source node {l_from}."
             
-            # Deduct source node
             rem_qty = src_q.data[0]["quantity"] - q
             if rem_qty == 0:
                 supabase.table("inventory_items").update({"quantity": 0, "is_archived": True}).eq("id", src_q.data[0]["id"]).execute()
             else:
                 supabase.table("inventory_items").update({"quantity": rem_qty}).eq("id", src_q.data[0]["id"]).execute()
                 
-            # Add or update target destination node
             dst_q = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", l_to).eq("access_code", user_code).execute()
             if dst_q.data:
                 new_dst_q = dst_q.data[0]["quantity"] + q
@@ -199,7 +197,6 @@ with tab1:
             else:
                 supabase.table("inventory_items").insert({"sku": sku, "item_name": f"Item {sku}", "location": l_to, "quantity": q, "access_code": user_code, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
-            # Write transaction log traces using allowed DB tags
             supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
             supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
             return True, f"✅ Successfully transferred {q} units of {sku} from {l_from} to {l_to}!"
@@ -220,7 +217,6 @@ with tab1:
                 if new_qty < 0:
                     return False, f"❌ Aborted '{sku}': Insufficient levels inside system matrix storage path. Available: {current_qty}"
                 
-                # Soft-deletes keep historical data rows clean instead of completely erasing records
                 is_archived_flag = True if new_qty == 0 else False
                 supabase.table("inventory_items").update({"quantity": new_qty, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": datetime.datetime.now().isoformat()}).eq("id", record["id"]).execute()
                 supabase.table("stock_ledger").insert({"sku": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
@@ -233,8 +229,9 @@ with tab1:
                     supabase.table("stock_ledger").insert({"sku": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
                     return True, f"📦 Created fresh batch entry tracking for {sku} inside matrix sector {loc}."
 
-    # Render interface options matching layout selection models
+    # Render layout views depending on target configuration mode selections
     if op_mode == "Single Flow Control":
+        sku_input = st.text_input("📋 Enter, Scan, or Type Single SKU Code:", key="single_sku_field").strip()
         if st.button("🚀 Commit Direct Transaction"):
             if not sku_input:
                 st.warning("SKU entry identifier string required.")
@@ -243,38 +240,60 @@ with tab1:
                 if success: st.success(msg)
                 else: st.error(msg)
     else:
-        # Batch Queue Workspace Layout Design Engines
-        col_add, col_clr = st.columns(2)
-        with col_add:
-            if st.button("➕ Queue Item Row"):
-                if not sku_input:
-                    st.warning("Provide item identifier tracking index values.")
-                else:
-                    st.session_state.batch_queue.append({
-                        "sku": sku_input, "action": action, "qty": qty, "location": location_input,
-                        "loc_from": loc_from, "loc_to": loc_to, "metadata": scanned_metadata
-                    })
-                    st.toast(f"Queued transaction entry row: {sku_input}")
-        with col_clr:
-            if st.button("🗑️ Empty Working Queue Grid"):
-                st.session_state.batch_queue = []
-                st.rerun()
-                
-        if st.session_state.batch_queue:
-            st.markdown("### 📋 Staged Queue Batch Pipelines Overview:")
-            st.dataframe(pd.DataFrame(st.session_state.batch_queue)[["sku", "action", "qty", "location"]], use_container_width=True)
+        # --- MULTIPLE ENTRY PARSING WORKSPACE ---
+        st.markdown("### 🛠️ High-Speed Scanner Terminal")
+        st.caption("Tip: Configure your hardware scanner to insert commas automatically, or type tokens manually separating variants with commas (e.g. `apple, apple, apple`).")
+        
+        # Form encapsulation forces complete tracking streams to hold state changes until complete
+        with st.form("multi_entry_scan_form", clear_on_submit=True):
+            scan_stream_input = st.text_area("📡 Continuous Scanner Barcode Stream Input Feed:", key="scanner_feed_area")
+            submit_scan = st.form_submit_button("📥 Parse and Queue Scanned Assets")
             
-            if st.button("🏁 Execute Entire Batch Processing Sequence"):
-                success_count, fail_count = 0, 0
-                for task in st.session_state.batch_queue:
-                    ok, res_msg = execute_transaction(task["sku"], task["action"], task["qty"], task["location"], task["loc_from"], task["loc_to"], task["metadata"])
-                    if ok: success_count += 1
-                    else:
-                        st.error(res_msg)
-                        fail_count += 1
-                st.success(f"Processing sequence complete! Successful transfers: {success_count} | Aborted runs: {fail_count}")
-                st.session_state.batch_queue = []
-                st.rerun()
+            if submit_scan and scan_stream_input:
+                # Tokenize the incoming text string by parsing commas
+                raw_tokens = scan_stream_input.split(",")
+                parsed_skus = [token.strip() for token in raw_tokens if token.strip()]
+                
+                if parsed_skus:
+                    for scanned_sku in parsed_skus:
+                        st.session_state.batch_queue.append({
+                            "sku": scanned_sku, 
+                            "action": action, 
+                            "qty": qty,  # Ingests user chosen base quantity factor per individual scan token instance
+                            "location": location_input,
+                            "loc_from": loc_from, 
+                            "loc_to": loc_to, 
+                            "metadata": scanned_metadata
+                        })
+                    st.toast(f"Parsed and added {len(parsed_skus)} item entries to execution layout queue staging table.")
+        
+        # Render staging workspace summaries
+        if st.session_state.batch_queue:
+            st.markdown("---")
+            st.markdown("### 📋 Staged Group Manifest Grid Details:")
+            
+            # Formulate clean dataframe matrix summaries showing grouped calculations
+            raw_q_df = pd.DataFrame(st.session_state.batch_queue)
+            display_grouping = raw_q_df.groupby(["sku", "action", "location"]).size().reset_index(name="Total Scanned Entries Instances")
+            st.dataframe(display_grouping, use_container_width=True, hide_index=True)
+            
+            col_exec, col_clear = st.columns(2)
+            with col_exec:
+                if st.button("🏁 Execute Entire Multiple Entry Batch Sequence"):
+                    success_count, fail_count = 0, 0
+                    for task in st.session_state.batch_queue:
+                        ok, res_msg = execute_transaction(task["sku"], task["action"], task["qty"], task["location"], task["loc_from"], task["loc_to"], task["metadata"])
+                        if ok: success_count += 1
+                        else:
+                            st.error(res_msg)
+                            fail_count += 1
+                    st.success(f"Processing sequence complete! Successful syncs: {success_count} | Aborted runs: {fail_count}")
+                    st.session_state.batch_queue = []
+                    st.rerun()
+            with col_clear:
+                if st.button("🗑️ Reset Pending Staged Queue Table"):
+                    st.session_state.batch_queue = []
+                    st.rerun()
 
 # ==========================================
 # TAB 2: SMART FINDER (PARTIAL WILD CARD MATCHING)
@@ -418,7 +437,6 @@ with tab5:
             }
             supabase.table("user_profiles").update(update_payload).eq("id", profile_db_id).execute()
             
-            # Synchronize localized volatile storage variables 
             st.session_state.user_session["terminal_title"] = new_title
             st.session_state.user_session["authorized_locations"] = parsed_locations
             st.session_state.user_session["custom_data_fields"] = parsed_custom_fields
