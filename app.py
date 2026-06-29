@@ -12,7 +12,6 @@ st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layou
 st.markdown("""
 <style>
     .stButton>button { width: 100%; height: 50px; font-size: 16px; }
-    .low-stock-alert { background-color: #ffcccc; padding: 10px; border-radius: 5px; border-left: 5px solid #ff0000; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,14 +77,12 @@ if st.session_state.user_session is None:
             if login_user and login_pass:
                 target_hash = hash_password(login_pass)
                 
-                # --- TEMPORARY DEBUG HOOK ---
                 try:
                     user_query = supabase.table("user_profiles").select("*").eq("username", login_user).eq("password_hash", target_hash).execute()
                 except Exception as db_err:
                     st.error("⚠️ Raw Supabase Error Caught:")
                     st.code(str(db_err))
                     st.stop()
-                # -----------------------------
                 
                 if user_query.data:
                     user_record = user_query.data[0]
@@ -150,7 +147,7 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (HEADER REMOVED)
+# TAB 1: OPERATIONAL TERMINAL
 # ==========================================
 with tab1:
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
@@ -158,9 +155,9 @@ with tab1:
     st.markdown("---")
     
     if op_mode == "Single Entry":
-        sku_input = st.text_input("📋 Enter SKU Code:", key="wms_single_input_bar").strip()
+        sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
     else:
-        sku_stream = st.text_area("📋 Scan Continuous Barcode Stream (use commas to separate, e.g., apple, apple):", key="wms_multiple_input_bar").strip()
+        sku_stream = st.text_area("📋 Scan Continuous ID Stream (use commas to separate, e.g., obj101, obj102):", key="wms_multiple_input_bar").strip()
     
     col_dir, col_qt = st.columns(2)
     with col_dir:
@@ -191,7 +188,7 @@ with tab1:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
         if movement_type == "TRANSFER":
-            src_q = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", l_from).eq("access_code", user_code).eq("is_archived", False).execute()
+            src_q = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", l_from).eq("access_code", user_code).eq("is_archived", False).execute()
             if not src_q.data or src_q.data[0]["quantity"] < q:
                 return False, f"❌ Aborted '{sku}': Insufficient quantities inside source node {l_from}."
             
@@ -201,19 +198,19 @@ with tab1:
             else:
                 supabase.table("inventory_items").update({"quantity": rem_qty}).eq("id", src_q.data[0]["id"]).execute()
                 
-            dst_q = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", l_to).eq("access_code", user_code).execute()
+            dst_q = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", l_to).eq("access_code", user_code).execute()
             if dst_q.data:
                 new_dst_q = dst_q.data[0]["quantity"] + q
                 supabase.table("inventory_items").update({"quantity": new_dst_q, "is_archived": False, "last_updated": now_iso}).eq("id", dst_q.data[0]["id"]).execute()
             else:
-                supabase.table("inventory_items").insert({"sku": sku, "item_name": f"Item {sku}", "location": l_to, "quantity": q, "access_code": user_code, "metadata": src_q.data[0].get("metadata", {})}).execute()
+                supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": l_to, "quantity": q, "access_code": user_code, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
-            supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
-            supabase.table("stock_ledger").insert({"sku": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+            supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+            supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
             return True, f"✅ Successfully transferred {q} units of {sku} from {l_from} to {l_to}!"
             
         else:
-            query = supabase.table("inventory_items").select("*").eq("sku", sku).eq("location", loc).eq("access_code", user_code).execute()
+            query = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", loc).eq("access_code", user_code).execute()
             final_qty_change = q if movement_type == "IN" else -q
             
             if query.data:
@@ -230,20 +227,20 @@ with tab1:
                 
                 is_archived_flag = True if new_qty == 0 else False
                 supabase.table("inventory_items").update({"quantity": new_qty, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": now_iso}).eq("id", record["id"]).execute()
-                supabase.table("stock_ledger").insert({"sku": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+                supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
                 return True, f"✅ Sync operation complete for {sku}! Revised Total Balance: {new_qty}"
             else:
                 if movement_type == "OUT":
                     return False, f"❌ Aborted: Target tracking segment empty for {sku} inside location node {loc}."
                 else:
-                    supabase.table("inventory_items").insert({"sku": sku, "item_name": f"Item {sku}", "location": loc, "quantity": q, "metadata": meta, "access_code": user_code, "is_archived": False}).execute()
-                    supabase.table("stock_ledger").insert({"sku": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+                    supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": loc, "quantity": q, "metadata": meta, "access_code": user_code, "is_archived": False}).execute()
+                    supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
                     return True, f"📦 Created fresh batch entry tracking for {sku} inside matrix sector {loc}."
 
     if op_mode == "Single Entry":
         if st.button("🚀 Commit Direct Single Transaction"):
             if not sku_input:
-                st.warning("SKU entry identifier string required.")
+                st.warning("Object ID entry identifier string required.")
             elif "," in sku_input:
                 st.error("Detecting tokens structure. Please navigate to Multiple Entry Mode to run comma separated scanner chains.")
             else:
@@ -309,43 +306,47 @@ with tab1:
                 st.rerun()
 
 # ==========================================
-# TAB 2: SMART FINDER (HEADER REMOVED)
+# TAB 2: SMART FINDER (WITH IMAGES)
 # ==========================================
 with tab2:
-    search_sku = st.text_input("🔍 Search SKU:").strip()
+    search_sku = st.text_input("🔍 Search Object ID:").strip()
     
     if search_sku:
         wildcard_search = f"%{search_sku}%"
-        res = supabase.table("inventory_items").select("*").ilike("sku", wildcard_search).eq("access_code", user_code).eq("is_archived", False).execute()
+        res = supabase.table("inventory_items").select("*").ilike("object_id", wildcard_search).eq("access_code", user_code).eq("is_archived", False).execute()
         
         if res.data:
             df = pd.DataFrame(res.data)
             st.success(f"Discovered {len(df)} corresponding matches:")
             for _, row in df.iterrows():
-                alert_flag = "⚠️ LOW STOCK LEVEL WARNING" if row['quantity'] <= row.get('min_stock', 0) else ""
                 metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
-                st.info(f"📦 **SKU:** `{row['sku']}` | 📍 **Location Matrix:** `{row['location']}` | 🔢 **Quantity:** {row['quantity']} units {alert_flag}{metadata_disp}")
+                
+                # Render item profile information
+                st.info(f"📦 **Object ID:** `{row['object_id']}` | 📍 **Location Matrix:** `{row['location']}` | 🔢 **Quantity:** {row['quantity']} units{metadata_disp}")
+                
+                # Check and display image asset if available
+                img_url = row.get("image_url")
+                if img_url and img_url.strip() != "":
+                    st.image(img_url, caption=f"Visual asset link for Object: {row['object_id']}", use_container_width=True)
         else:
-            st.info("No matching item metrics located.")
+            st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK (HEADER REMOVED)
+# TAB 3: LIVE STOCK
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
     
     if all_items.data:
         rows = []
-        low_stock_critical_warnings = []
-        
         for r in all_items.data:
             flat_row = {
                 "Internal DB ID": r["id"],
-                "SKU": r["sku"],
+                "Object ID": r["object_id"],
                 "Item Name": r["item_name"],
                 "Location": r["location"],
                 "Quantity": r["quantity"],
-                "Alert Threshold (Min)": r.get("min_stock", 0)
+                "Image Public URL": r.get("image_url", "")
             }
             for custom_f in configured_custom_bars:
                 flat_row[custom_f] = ""
@@ -353,14 +354,6 @@ with tab3:
                 for k, v in r["metadata"].items():
                     flat_row[k] = v
             rows.append(flat_row)
-            
-            if r["quantity"] <= r.get("min_stock", 0):
-                low_stock_critical_warnings.append(f"🚨 **SKU {r['sku']}** at Location **{r['location']}** has dropped beneath safety limits! Current level: {r['quantity']} (Min: {r.get('min_stock', 0)})")
-        
-        if low_stock_critical_warnings:
-            with st.expander("⚠️ UNRESOLVED SYSTEM BALANCING WARNINGS ALERT PANEL", expanded=True):
-                for alert in low_stock_critical_warnings:
-                    st.markdown(f'<div class="low-stock-alert">{alert}</div>', unsafe_allow_html=True)
                     
         base_df = pd.DataFrame(rows)
         
@@ -373,7 +366,7 @@ with tab3:
         with col_sv:
             if st.button("💾 Apply Grid Parameter Modifications"):
                 with st.spinner("Synchronizing backend databases..."):
-                    fixed_sys_cols = ["Internal DB ID", "SKU", "Item Name", "Location", "Quantity", "Alert Threshold (Min)"]
+                    fixed_sys_cols = ["Internal DB ID", "Object ID", "Item Name", "Location", "Quantity", "Image Public URL"]
                     for idx, row in edited_df.iterrows():
                         db_id = row["Internal DB ID"]
                         meta_payload = {}
@@ -382,11 +375,11 @@ with tab3:
                                 meta_payload[col] = str(row[col])
                                 
                         update_data = {
-                            "sku": str(row["SKU"]),
+                            "object_id": str(row["Object ID"]),
                             "item_name": str(row["Item Name"]),
                             "location": str(row["Location"]),
                             "quantity": int(row["Quantity"]),
-                            "min_stock": int(row["Alert Threshold (Min)"]),
+                            "image_url": str(row["Image Public URL"]).strip(),
                             "metadata": meta_payload,
                             "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
                         }
@@ -401,7 +394,7 @@ with tab3:
         st.info("Your workspace channels contain zero product assets data rows.")
 
 # ==========================================
-# TAB 4: HISTORY (HEADER REMOVED)
+# TAB 4: HISTORY
 # ==========================================
 with tab4:
     ledger_query = supabase.table("stock_ledger").select("*").eq("access_code", user_code).order("timestamp", desc=True).execute()
@@ -423,8 +416,8 @@ with tab4:
         if "operator" not in ledger_df.columns: ledger_df["operator"] = "System Trace"
         ledger_df["operator"] = ledger_df["operator"].fillna("System Trace")
         
-        display_df = ledger_df[["Time Logged", "sku", "movement_type", "quantity", "operator"]].rename(
-            columns={"sku": "Product SKU", "movement_type": "Logistics Operation", "quantity": "Quantity Shift", "operator": "Operator Identity"}
+        display_df = ledger_df[["Time Logged", "object_id", "movement_type", "quantity", "operator"]].rename(
+            columns={"object_id": "Object ID", "movement_type": "Logistics Operation", "quantity": "Quantity Shift", "operator": "Operator Identity"}
         )
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
@@ -433,7 +426,7 @@ with tab4:
         st.info("No transaction history records discovered inside your workspace.")
 
 # ==========================================
-# TAB 5: PREFERENCES (HEADER KEPT)
+# TAB 5: PREFERENCES
 # ==========================================
 with tab5:
     st.subheader("⚙️ Terminal View Configurations")
