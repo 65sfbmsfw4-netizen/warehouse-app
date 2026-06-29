@@ -153,19 +153,18 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (WITH DIMENSIONS INPUT)
+# TAB 1: OPERATIONAL TERMINAL (SECURE FILE UPLOADS)
 # ==========================================
 with tab1:
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
     
     st.markdown("---")
     
-    uploaded_image_url = None
+    uploaded_image_path = None
     
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
         
-        # Split layout into 3 separate number inputs with a preset 'x' partition structure
         st.write("📏 **Dimensions Assignment Segment:**")
         dim_col1, dim_spacer1, dim_col2, dim_spacer2, dim_col3 = st.columns([3, 1, 3, 1, 3])
         with dim_col1:
@@ -179,7 +178,6 @@ with tab1:
         with dim_col3:
             h_num = st.number_input("Height", min_value=0, step=1, key="input_dim_h")
         
-        # Combine parameters cleanly into a text token string pattern
         dimensions_input = f"{l_num} x {w_num} x {h_num}"
         
         uploaded_file = st.file_uploader("📸 Optional: Attach Object Photo Asset", type=["png", "jpg", "jpeg", "webp"])
@@ -224,7 +222,7 @@ with tab1:
             for bar_field in configured_custom_bars:
                 scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_m_{bar_field}").strip()
 
-    def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None, img_url=None):
+    def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None, path_url=None):
         if meta is None: meta = {}
         movement_type = "IN" if "IN" in act else "OUT" if "OUT" in act else "TRANSFER"
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -239,10 +237,10 @@ with tab1:
             dst_q = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", l_to).eq("access_code", user_code).execute()
             if dst_q.data:
                 update_payload = {"quantity": 1, "is_archived": False, "last_updated": now_iso}
-                if img_url: update_payload["image_url"] = img_url
+                if path_url: update_payload["image_url"] = path_url
                 supabase.table("inventory_items").update(update_payload).eq("id", dst_q.data[0]["id"]).execute()
             else:
-                supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": l_to, "quantity": 1, "access_code": user_code, "image_url": img_url, "metadata": src_q.data[0].get("metadata", {})}).execute()
+                supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": l_to, "quantity": 1, "access_code": user_code, "image_url": path_url, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
             supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "OUT", "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
             supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "IN", "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
@@ -259,7 +257,7 @@ with tab1:
 
                 is_archived_flag = True if movement_type == "OUT" else False
                 update_payload = {"quantity": 0 if is_archived_flag else 1, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": now_iso}
-                if img_url: update_payload["image_url"] = img_url
+                if path_url: update_payload["image_url"] = path_url
                 
                 supabase.table("inventory_items").update(update_payload).eq("id", record["id"]).execute()
                 supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
@@ -268,7 +266,7 @@ with tab1:
                 if movement_type == "OUT":
                     return False, f"❌ Aborted: Target tracking segment empty for {sku} inside location node {loc}."
                 else:
-                    supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": loc, "quantity": 1, "metadata": meta, "access_code": user_code, "is_archived": False, "image_url": img_url}).execute()
+                    supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": loc, "quantity": 1, "metadata": meta, "access_code": user_code, "is_archived": False, "image_url": path_url}).execute()
                     supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
                     return True, f"📦 Created fresh batch entry tracking for {sku} inside matrix sector {loc}."
 
@@ -280,18 +278,19 @@ with tab1:
                 st.error("Detecting tokens structure. Please navigate to Multiple Entry Mode to run comma separated scanner chains.")
             else:
                 if uploaded_file:
-                    with st.spinner("Uploading photo asset to bucket storage..."):
+                    with st.spinner("Uploading photo asset to secure bucket storage..."):
                         try:
                             file_extension = uploaded_file.name.split(".")[-1]
                             unique_filename = f"{sku_input}_{uuid.uuid4().hex[:8]}.{file_extension}"
                             file_bytes = uploaded_file.read()
                             
                             supabase.storage.from_("item-images").upload(unique_filename, file_bytes, {"content-type": f"image/{file_extension}"})
-                            uploaded_image_url = supabase.storage.from_("item-images").get_public_url(unique_filename)
+                            # Store only the structural filename reference inside the DB row
+                            uploaded_image_path = unique_filename
                         except Exception as upload_err:
                             st.error(f"Failed to save visual asset: {str(upload_err)}")
                 
-                success, msg = execute_transaction(sku_input, action, 1, location_input, loc_from, loc_to, scanned_metadata, uploaded_image_url)
+                success, msg = execute_transaction(sku_input, action, 1, location_input, loc_from, loc_to, scanned_metadata, uploaded_image_path)
                 if success: st.success(msg)
                 else: st.error(msg)
     else:
@@ -348,7 +347,7 @@ with tab1:
                 st.rerun()
 
 # ==========================================
-# TAB 2: SMART FINDER (WITH DIMENSIONS FALLBACK)
+# TAB 2: SMART FINDER (SECURE TEMPORARY TOKENS)
 # ==========================================
 with tab2:
     search_sku = st.text_input("🔍 Search Object ID:").strip()
@@ -362,7 +361,6 @@ with tab2:
             st.success(f"Discovered {len(df)} corresponding matches:")
             for _, row in df.iterrows():
                 metadata_dict = row.get("metadata") or {}
-                # If sizes missing or blank, fallback to clean placeholder context
                 dims = metadata_dict.get("dimensions", "0 x 0 x 0")
                 if not dims or str(dims).strip() == "":
                     dims = "0 x 0 x 0"
@@ -372,14 +370,24 @@ with tab2:
                 
                 st.info(f"📦 **Object ID:** `{row['object_id']}` | 📍 **Location:** `{row['location']}` | 📏 **Size (L x W x H):** `{dims}`{metadata_disp}")
                 
-                img_url = row.get("image_url")
-                if img_url and img_url.strip() != "":
-                    st.image(img_url, caption=f"Visual asset link for Object: {row['object_id']}", use_container_width=True)
+                img_field = row.get("image_url")
+                if img_field and img_field.strip() != "":
+                    try:
+                        # Generate an authenticated 60-second expiring URL link dynamically on the fly
+                        if "/" in img_field or "http" in img_field:
+                            img_path = img_field.split("/")[-1]
+                        else:
+                            img_path = img_field
+                        
+                        signed_url_res = supabase.storage.from_("item-images").create_signed_url(img_path, 60)
+                        st.image(signed_url_res["signedURL"], caption=f"Visual asset for Object: {row['object_id']} (Link expires in 60s)", use_container_width=True)
+                    except Exception:
+                        st.caption("🔒 Image verification failed or asset missing.")
         else:
             st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK (000 X 000 X 000 PRESET FORMAT)
+# TAB 3: LIVE STOCK (SECURE DATA GENERATION)
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
@@ -389,14 +397,24 @@ with tab3:
         for r in all_items.data:
             metadata_dict = r.get("metadata") or {}
             
-            # Extract and check dimensions, inject baseline preset layout values if not present
             fetched_dims = metadata_dict.get("dimensions", "0 x 0 x 0")
             if not fetched_dims or str(fetched_dims).strip() == "":
                 fetched_dims = "0 x 0 x 0"
                 
+            # Compile a runtime preview link for Streamlit layout framework
+            raw_url = r.get("image_url", "")
+            runtime_preview = ""
+            if raw_url and raw_url.strip() != "":
+                try:
+                    clean_path = raw_url.split("/")[-1] if "/" in raw_url else raw_url
+                    runtime_preview = supabase.storage.from_("item-images").create_signed_url(clean_path, 60)["signedURL"]
+                except:
+                    runtime_preview = ""
+
             flat_row = {
                 "Internal DB ID": r["id"],
-                "Image Preview": r.get("image_url", ""), 
+                "Image Preview": runtime_preview, 
+                "Storage Path Key": r.get("image_url", ""), # Hidden fallback reference track
                 "Object ID": r["object_id"],
                 "Item Name": r["item_name"],
                 "Location": r["location"],
@@ -417,7 +435,8 @@ with tab3:
         for extra_col in configured_custom_bars:
             if extra_col not in base_df.columns: base_df[extra_col] = ""
 
-        visible_columns = [col for col in base_df.columns if col != "Internal DB ID"]
+        # Hide core database metrics and raw access files from layout dashboard
+        visible_columns = [col for col in base_df.columns if col not in ["Internal DB ID", "Storage Path Key"]]
 
         edited_df = st.data_editor(
             base_df[visible_columns], 
@@ -426,7 +445,7 @@ with tab3:
             column_config={
                 "Image Preview": st.column_config.ImageColumn(
                     "Image Preview", 
-                    help="Compressed high-speed visual thumbnail assets",
+                    help="Secure short-lived visual thumbnail assets",
                     width="small"
                 )
             }
@@ -439,8 +458,8 @@ with tab3:
                     fixed_sys_cols = ["Image Preview", "Object ID", "Item Name", "Location", "Length x Weight x Height"]
                     for idx, row in edited_df.iterrows():
                         db_id = base_df.loc[idx, "Internal DB ID"]
+                        old_path = base_df.loc[idx, "Storage Path Key"]
                         
-                        # Fallback control loop check when updating data table inline
                         save_dims = str(row["Length x Weight x Height"]).strip()
                         if not save_dims or save_dims == "":
                             save_dims = "0 x 0 x 0"
@@ -456,7 +475,7 @@ with tab3:
                             "object_id": str(row["Object ID"]),
                             "item_name": str(row["Item Name"]),
                             "location": str(row["Location"]),
-                            "image_url": str(row["Image Preview"]).strip(),
+                            "image_url": old_path, 
                             "metadata": meta_payload,
                             "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
                         }
@@ -467,7 +486,7 @@ with tab3:
         with col_exp:
             excel_buffer = io.BytesIO()
             if st.button("📊 Compile & Export Rich Excel Report (.xlsx)"):
-                with st.spinner("Downloading image tokens and building report layout..."):
+                with st.spinner("Downloading private image tokens and packing secure spreadsheet matrix..."):
                     wb = Workbook()
                     ws = wb.active
                     ws.title = "Live Inventory Assets"
@@ -500,10 +519,10 @@ with tab3:
                             
                         ws.append(data_payload)
                         
-                        img_url = row["Image Preview"]
-                        if img_url and str(img_url).strip() != "":
+                        secure_preview_url = row["Image Preview"]
+                        if secure_preview_url and str(secure_preview_url).strip() != "":
                             try:
-                                response = requests.get(img_url.strip(), timeout=5)
+                                response = requests.get(secure_preview_url, timeout=5)
                                 if response.status_code == 200:
                                     img_data = io.BytesIO(response.content)
                                     pil_img = PILImage.open(img_data)
@@ -516,7 +535,7 @@ with tab3:
                                     excel_img = OpenpyxlImage(temp_img_buffer)
                                     ws.add_image(excel_img, f"A{row_num}")
                             except Exception:
-                                ws[f"A{row_num}"] = "Image Error"
+                                ws[f"A{row_num}"] = "Secured"
                     
                     wb.save(excel_buffer)
                     excel_buffer.seek(0)
@@ -525,7 +544,7 @@ with tab3:
                     st.download_button(
                         label="📥 Download Rich Excel File (.xlsx)",
                         data=excel_buffer,
-                        file_name=f"WMS_Detailed_Report_{datetime.date.today()}.xlsx",
+                        file_name=f"WMS_Secure_Report_{datetime.date.today()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
     else:
