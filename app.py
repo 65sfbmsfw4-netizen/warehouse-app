@@ -159,7 +159,6 @@ with tab1:
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
         
-        # New Feature: File / Camera Drag & Drop widget
         uploaded_file = st.file_uploader("📸 Optional: Attach Object Photo Asset", type=["png", "jpg", "jpeg", "webp"])
         if uploaded_file:
             st.image(uploaded_file, width=150, caption="Staged visual preview")
@@ -256,7 +255,6 @@ with tab1:
             elif "," in sku_input:
                 st.error("Detecting tokens structure. Please navigate to Multiple Entry Mode to run comma separated scanner chains.")
             else:
-                # Process file upload to bucket dynamically if present
                 if uploaded_file:
                     with st.spinner("Uploading photo asset to bucket storage..."):
                         try:
@@ -264,7 +262,6 @@ with tab1:
                             unique_filename = f"{sku_input}_{uuid.uuid4().hex[:8]}.{file_extension}"
                             file_bytes = uploaded_file.read()
                             
-                            # Upload to 'item-images' bucket
                             supabase.storage.from_("item-images").upload(unique_filename, file_bytes, {"content-type": f"image/{file_extension}"})
                             uploaded_image_url = supabase.storage.from_("item-images").get_public_url(unique_filename)
                         except Exception as upload_err:
@@ -355,7 +352,7 @@ with tab2:
             st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK
+# TAB 3: LIVE STOCK (IMAGE CELLS INTERGATED)
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
@@ -365,11 +362,11 @@ with tab3:
         for r in all_items.data:
             flat_row = {
                 "Internal DB ID": r["id"],
+                "Image Preview": r.get("image_url", ""), # Moved to top view index row positioning
                 "Object ID": r["object_id"],
                 "Item Name": r["item_name"],
                 "Location": r["location"],
-                "Quantity": r["quantity"],
-                "Image Public URL": r.get("image_url", "")
+                "Quantity": r["quantity"]
             }
             for custom_f in configured_custom_bars:
                 flat_row[custom_f] = ""
@@ -383,13 +380,26 @@ with tab3:
         for extra_col in configured_custom_bars:
             if extra_col not in base_df.columns: base_df[extra_col] = ""
 
-        edited_df = st.data_editor(base_df, hide_index=True, use_container_width=True, disabled=["Internal DB ID"])
+        # Optimized image layout configuration block
+        edited_df = st.data_editor(
+            base_df, 
+            hide_index=True, 
+            use_container_width=True, 
+            disabled=["Internal DB ID"],
+            column_config={
+                "Image Preview": st.column_config.ImageColumn(
+                    "Image Preview", 
+                    help="Compressed high-speed visual thumbnail assets",
+                    width="small" # Restricts size to a clean ~35px column footprint for high performance
+                )
+            }
+        )
         
         col_sv, col_exp = st.columns(2)
         with col_sv:
             if st.button("💾 Apply Grid Parameter Modifications"):
                 with st.spinner("Synchronizing backend databases..."):
-                    fixed_sys_cols = ["Internal DB ID", "Object ID", "Item Name", "Location", "Quantity", "Image Public URL"]
+                    fixed_sys_cols = ["Internal DB ID", "Image Preview", "Object ID", "Item Name", "Location", "Quantity"]
                     for idx, row in edited_df.iterrows():
                         db_id = row["Internal DB ID"]
                         meta_payload = {}
@@ -402,7 +412,7 @@ with tab3:
                             "item_name": str(row["Item Name"]),
                             "location": str(row["Location"]),
                             "quantity": int(row["Quantity"]),
-                            "image_url": str(row["Image Public URL"]).strip(),
+                            "image_url": str(row["Image Preview"]).strip(),
                             "metadata": meta_payload,
                             "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
                         }
