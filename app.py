@@ -148,7 +148,7 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (WITH IMAGE DROP)
+# TAB 1: OPERATIONAL TERMINAL (WITH DIMENSIONS INPUT)
 # ==========================================
 with tab1:
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
@@ -158,6 +158,7 @@ with tab1:
     uploaded_image_url = None
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
+        dimensions_input = st.text_input("📏 Dimensions (Length x Weight x Height):", placeholder="e.g. 50x20x30", key="dims_input_bar").strip()
         
         uploaded_file = st.file_uploader("📸 Optional: Attach Object Photo Asset", type=["png", "jpg", "jpeg", "webp"])
         if uploaded_file:
@@ -169,7 +170,10 @@ with tab1:
     with col_dir:
         action = st.radio("Action:", ["IN", "OUT", "TRANSFER"])
     with col_qt:
-        qty = st.number_input("Quantity:", min_value=1, value=1)
+        # Kept abstractly behind database architecture to avoid breaking ledger logs schema, hidden logic layout assignment
+        qty = 1 
+        location_input = st.selectbox("Location:", options=configured_locations)
+        loc_from, loc_to = None, None
         
     if action == "TRANSFER":
         col_f, col_t = st.columns(2)
@@ -178,15 +182,15 @@ with tab1:
             location_input = loc_from
         with col_t:
             loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc")
-    else:
-        location_input = st.selectbox("Location:", options=configured_locations)
-        loc_from, loc_to = None, None
 
     scanned_metadata = {}
-    if configured_custom_bars and action != "TRANSFER":
-        st.caption("📝 Transaction Extra Attributes Payload:")
-        for bar_field in configured_custom_bars:
-            scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_m_{bar_field}").strip()
+    if action != "TRANSFER":
+        if dimensions_input:
+            scanned_metadata["dimensions"] = dimensions_input
+        if configured_custom_bars:
+            st.caption("📝 Transaction Extra Attributes Payload:")
+            for bar_field in configured_custom_bars:
+                scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_m_{bar_field}").strip()
 
     def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None, img_url=None):
         if meta is None: meta = {}
@@ -195,57 +199,45 @@ with tab1:
         
         if movement_type == "TRANSFER":
             src_q = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", l_from).eq("access_code", user_code).eq("is_archived", False).execute()
-            if not src_q.data or src_q.data[0]["quantity"] < q:
-                return False, f"❌ Aborted '{sku}': Insufficient quantities inside source node {l_from}."
+            if not src_q.data:
+                return False, f"❌ Aborted '{sku}': Object not found inside source node {l_from}."
             
-            rem_qty = src_q.data[0]["quantity"] - q
-            if rem_qty == 0:
-                supabase.table("inventory_items").update({"quantity": 0, "is_archived": True}).eq("id", src_q.data[0]["id"]).execute()
-            else:
-                supabase.table("inventory_items").update({"quantity": rem_qty}).eq("id", src_q.data[0]["id"]).execute()
+            supabase.table("inventory_items").update({"quantity": 0, "is_archived": True}).eq("id", src_q.data[0]["id"]).execute()
                 
             dst_q = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", l_to).eq("access_code", user_code).execute()
             if dst_q.data:
-                new_dst_q = dst_q.data[0]["quantity"] + q
-                update_payload = {"quantity": new_dst_q, "is_archived": False, "last_updated": now_iso}
+                update_payload = {"quantity": 1, "is_archived": False, "last_updated": now_iso}
                 if img_url: update_payload["image_url"] = img_url
                 supabase.table("inventory_items").update(update_payload).eq("id", dst_q.data[0]["id"]).execute()
             else:
-                supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": l_to, "quantity": q, "access_code": user_code, "image_url": img_url, "metadata": src_q.data[0].get("metadata", {})}).execute()
+                supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": l_to, "quantity": 1, "access_code": user_code, "image_url": img_url, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
-            supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
-            supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
-            return True, f"✅ Successfully transferred {q} units of {sku} from {l_from} to {l_to}!"
+            supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "OUT", "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
+            supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "IN", "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
+            return True, f"✅ Successfully transferred {sku} from {l_from} to {l_to}!"
             
         else:
             query = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", loc).eq("access_code", user_code).execute()
-            final_qty_change = q if movement_type == "IN" else -q
             
             if query.data:
                 record = query.data[0]
-                current_qty = record["quantity"] if not record["is_archived"] else 0
-                new_qty = current_qty + final_qty_change
-                
                 current_meta = record.get("metadata") or {}
                 for k, v in meta.items():
                     if v: current_meta[k] = v
 
-                if new_qty < 0:
-                    return False, f"❌ Aborted '{sku}': Insufficient levels inside system matrix storage path. Available: {current_qty}"
-                
-                is_archived_flag = True if new_qty == 0 else False
-                update_payload = {"quantity": new_qty, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": now_iso}
+                is_archived_flag = True if movement_type == "OUT" else False
+                update_payload = {"quantity": 0 if is_archived_flag else 1, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": now_iso}
                 if img_url: update_payload["image_url"] = img_url
                 
                 supabase.table("inventory_items").update(update_payload).eq("id", record["id"]).execute()
-                supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
-                return True, f"✅ Sync operation complete for {sku}! Revised Total Balance: {new_qty}"
+                supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
+                return True, f"✅ Sync operation complete for {sku}!"
             else:
                 if movement_type == "OUT":
                     return False, f"❌ Aborted: Target tracking segment empty for {sku} inside location node {loc}."
                 else:
-                    supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": loc, "quantity": q, "metadata": meta, "access_code": user_code, "is_archived": False, "image_url": img_url}).execute()
-                    supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
+                    supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": loc, "quantity": 1, "metadata": meta, "access_code": user_code, "is_archived": False, "image_url": img_url}).execute()
+                    supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": 1, "access_code": user_code, "operator": operator_username}).execute()
                     return True, f"📦 Created fresh batch entry tracking for {sku} inside matrix sector {loc}."
 
     if op_mode == "Single Entry":
@@ -267,7 +259,7 @@ with tab1:
                         except Exception as upload_err:
                             st.error(f"Failed to save visual asset: {str(upload_err)}")
                 
-                success, msg = execute_transaction(sku_input, action, qty, location_input, loc_from, loc_to, scanned_metadata, uploaded_image_url)
+                success, msg = execute_transaction(sku_input, action, 1, location_input, loc_from, loc_to, scanned_metadata, uploaded_image_url)
                 if success: st.success(msg)
                 else: st.error(msg)
     else:
@@ -282,7 +274,7 @@ with tab1:
                     
                     for scanned_sku in parsed_skus:
                         st.session_state.batch_queue.append({
-                            "sku": scanned_sku, "action": action, "qty": qty, "location": location_input,
+                            "sku": scanned_sku, "action": action, "qty": 1, "location": location_input,
                             "loc_from": loc_from, "loc_to": loc_to, "metadata": scanned_metadata
                         })
                     st.toast(f"Parsed and added {len(parsed_skus)} item entries to execution layout queue staging table.")
@@ -309,17 +301,12 @@ with tab1:
                     loc = row_task["location"]
                     
                     match_slice = queue_df[(queue_df["sku"] == sku) & (queue_df["action"] == act) & (queue_df["location"] == loc)].iloc[0]
-                    base_qty_factor = match_slice["qty"]
                     meta_payload = match_slice["metadata"]
-                    
                     l_from = match_slice["loc_from"] if pd.notna(match_slice["loc_from"]) else None
                     l_to = match_slice["loc_to"] if pd.notna(match_slice["loc_to"]) else None
                     
-                    total_consolidated_qty = int(row_task["scanned_count"] * base_qty_factor)
-                    
-                    ok, res_msg = execute_transaction(sku, act, total_consolidated_qty, loc, l_from, l_to, meta_payload)
-                    if ok:
-                        success_count += 1
+                    ok, res_msg = execute_transaction(sku, act, 1, loc, l_from, l_to, meta_payload)
+                    if ok: success_count += 1
                     else:
                         st.error(res_msg)
                         fail_count += 1
@@ -329,7 +316,7 @@ with tab1:
                 st.rerun()
 
 # ==========================================
-# TAB 2: SMART FINDER (WITH IMAGES)
+# TAB 2: SMART FINDER (WITH DIMENSIONS & IMAGES)
 # ==========================================
 with tab2:
     search_sku = st.text_input("🔍 Search Object ID:").strip()
@@ -342,8 +329,14 @@ with tab2:
             df = pd.DataFrame(res.data)
             st.success(f"Discovered {len(df)} corresponding matches:")
             for _, row in df.iterrows():
-                metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
-                st.info(f"📦 **Object ID:** `{row['object_id']}` | 📍 **Location Matrix:** `{row['location']}` | 🔢 **Quantity:** {row['quantity']} units{metadata_disp}")
+                metadata_dict = row.get("metadata") or {}
+                dims = metadata_dict.get("dimensions", "N/A")
+                
+                # Exclude size info from running custom fields notes layout dump
+                clean_meta_notes = {k: v for k, v in metadata_dict.items() if k != "dimensions"}
+                metadata_disp = f" | Notes: {clean_meta_notes}" if clean_meta_notes else ""
+                
+                st.info(f"📦 **Object ID:** `{row['object_id']}` | 📍 **Location:** `{row['location']}` | 📏 **Size (L x W x H):** `{dims}`{metadata_disp}")
                 
                 img_url = row.get("image_url")
                 if img_url and img_url.strip() != "":
@@ -352,7 +345,7 @@ with tab2:
             st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK (IMAGE CELLS INTERGATED)
+# TAB 3: LIVE STOCK (HIDDEN ID, REMOVED QTY, ADDED SIZE)
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
@@ -360,19 +353,26 @@ with tab3:
     if all_items.data:
         rows = []
         for r in all_items.data:
+            metadata_dict = r.get("metadata") or {}
+            
             flat_row = {
                 "Internal DB ID": r["id"],
-                "Image Preview": r.get("image_url", ""), # Moved to top view index row positioning
+                "Image Preview": r.get("image_url", ""), 
                 "Object ID": r["object_id"],
                 "Item Name": r["item_name"],
                 "Location": r["location"],
-                "Quantity": r["quantity"]
+                "Length x Weight x Height": metadata_dict.get("dimensions", "")
             }
+            
+            # Map configured extra data tags excluding dimensions key
             for custom_f in configured_custom_bars:
-                flat_row[custom_f] = ""
-            if isinstance(r["metadata"], dict):
-                for k, v in r["metadata"].items():
-                    flat_row[k] = v
+                flat_row[custom_f] = metadata_dict.get(custom_f, "")
+                
+            # Handle remaining untracked metadata
+            if isinstance(metadata_dict, dict):
+                for k, v in metadata_dict.items():
+                    if k not in ["dimensions"] and k not in configured_custom_bars:
+                        flat_row[k] = v
             rows.append(flat_row)
                     
         base_df = pd.DataFrame(rows)
@@ -380,17 +380,18 @@ with tab3:
         for extra_col in configured_custom_bars:
             if extra_col not in base_df.columns: base_df[extra_col] = ""
 
-        # Optimized image layout configuration block
+        # Using explicit layout tracking maps to hide technical backend data rows
+        visible_columns = [col for col in base_df.columns if col != "Internal DB ID"]
+
         edited_df = st.data_editor(
-            base_df, 
+            base_df[visible_columns], 
             hide_index=True, 
             use_container_width=True, 
-            disabled=["Internal DB ID"],
             column_config={
                 "Image Preview": st.column_config.ImageColumn(
                     "Image Preview", 
                     help="Compressed high-speed visual thumbnail assets",
-                    width="small" # Restricts size to a clean ~35px column footprint for high performance
+                    width="small"
                 )
             }
         )
@@ -399,10 +400,13 @@ with tab3:
         with col_sv:
             if st.button("💾 Apply Grid Parameter Modifications"):
                 with st.spinner("Synchronizing backend databases..."):
-                    fixed_sys_cols = ["Internal DB ID", "Image Preview", "Object ID", "Item Name", "Location", "Quantity"]
+                    fixed_sys_cols = ["Image Preview", "Object ID", "Item Name", "Location", "Length x Weight x Height"]
                     for idx, row in edited_df.iterrows():
-                        db_id = row["Internal DB ID"]
-                        meta_payload = {}
+                        db_id = base_df.loc[idx, "Internal DB ID"] # Safe structural reference mapping target lookup key
+                        
+                        meta_payload = {
+                            "dimensions": str(row["Length x Weight x Height"]).strip()
+                        }
                         for col in edited_df.columns:
                             if col not in fixed_sys_cols and pd.notna(row[col]) and str(row[col]).strip() != "":
                                 meta_payload[col] = str(row[col])
@@ -411,7 +415,6 @@ with tab3:
                             "object_id": str(row["Object ID"]),
                             "item_name": str(row["Item Name"]),
                             "location": str(row["Location"]),
-                            "quantity": int(row["Quantity"]),
                             "image_url": str(row["Image Preview"]).strip(),
                             "metadata": meta_payload,
                             "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -421,7 +424,7 @@ with tab3:
                     st.rerun()
                     
         with col_exp:
-            export_csv_data = base_df.to_csv(index=False).encode('utf-8')
+            export_csv_data = base_df[visible_columns].to_csv(index=False).encode('utf-8')
             st.download_button(label="📥 Export Ledger Analysis Data to CSV", data=export_csv_data, file_name=f"WMS_Inventory_Report_{datetime.date.today()}.csv", mime="text/csv")
     else:
         st.info("Your workspace channels contain zero product assets data rows.")
@@ -445,12 +448,10 @@ with tab4:
                 return ts_str[:19].replace("T", " ")
 
         ledger_df["Time Logged"] = ledger_df["timestamp"].apply(localize_timestamp)
+        ledger_df["operator"] = ledger_df.get("operator", "System Trace").fillna("System Trace")
         
-        if "operator" not in ledger_df.columns: ledger_df["operator"] = "System Trace"
-        ledger_df["operator"] = ledger_df["operator"].fillna("System Trace")
-        
-        display_df = ledger_df[["Time Logged", "object_id", "movement_type", "quantity", "operator"]].rename(
-            columns={"object_id": "Object ID", "movement_type": "Logistics Operation", "quantity": "Quantity Shift", "operator": "Operator Identity"}
+        display_df = ledger_df[["Time Logged", "object_id", "movement_type", "operator"]].rename(
+            columns={"object_id": "Object ID", "movement_type": "Logistics Operation", "operator": "Operator Identity"}
         )
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
