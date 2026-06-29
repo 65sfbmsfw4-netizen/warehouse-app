@@ -77,7 +77,7 @@ if st.session_state.user_session is None:
         if st.button("🔑 Log In to Workspace"):
             if login_user and login_pass:
                 target_hash = hash_password(login_pass)
-                user_query = supabase.table("user_profiles").select("*").ilike("username", login_user).eq("password_hash", target_hash).execute()
+                user_query = supabase.table("user_profiles").select("*").eq("username", login_user).eq("password_hash", target_hash).execute()
                 
                 if user_query.data:
                     user_record = user_query.data[0]
