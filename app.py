@@ -6,6 +6,11 @@ import urllib.request
 import hashlib
 import uuid
 from zoneinfo import ZoneInfo
+import io  # 👈 ADD THIS LINE
+import requests  # 👈 ADD THIS LINE
+from openpyxl import Workbook  # 👈 ADD THIS LINE
+from openpyxl.drawing.image import Image as OpenpyxlImage  # 👈 ADD THIS LINE
+from PIL import Image as PILImage  # 👈 ADD THIS LINE
 
 st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layout="centered")
 
