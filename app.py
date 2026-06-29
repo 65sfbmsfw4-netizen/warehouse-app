@@ -153,7 +153,7 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (WITH DYNAMIC LAYOUTS)
+# TAB 1: OPERATIONAL TERMINAL (WITH DIMENSIONS INPUT)
 # ==========================================
 with tab1:
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
@@ -164,7 +164,23 @@ with tab1:
     
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
-        dimensions_input = st.text_input("📏 Dimensions (Length x Weight x Height):", placeholder="e.g. 50x20x30", key="dims_input_bar").strip()
+        
+        # Split layout into 3 separate number inputs with a preset 'x' partition structure
+        st.write("📏 **Dimensions Assignment Segment:**")
+        dim_col1, dim_spacer1, dim_col2, dim_spacer2, dim_col3 = st.columns([3, 1, 3, 1, 3])
+        with dim_col1:
+            l_num = st.number_input("Length", min_value=0, step=1, key="input_dim_l")
+        with dim_spacer1:
+            st.markdown("<h3 style='text-align: center; margin-top: 25px;'>x</h3>", unsafe_allow_html=True)
+        with dim_col2:
+            w_num = st.number_input("Weight", min_value=0, step=1, key="input_dim_w")
+        with dim_spacer2:
+            st.markdown("<h3 style='text-align: center; margin-top: 25px;'>x</h3>", unsafe_allow_html=True)
+        with dim_col3:
+            h_num = st.number_input("Height", min_value=0, step=1, key="input_dim_h")
+        
+        # Combine parameters cleanly into a text token string pattern
+        dimensions_input = f"{l_num} x {w_num} x {h_num}"
         
         uploaded_file = st.file_uploader("📸 Optional: Attach Object Photo Asset", type=["png", "jpg", "jpeg", "webp"])
         if uploaded_file:
@@ -186,13 +202,12 @@ with tab1:
             loc_from, loc_to = None, None
 
     else:
-        # Multiple Entry UI variations
         sku_stream = st.text_area("📋 Scan Continuous ID Stream (use commas to separate, e.g., obj101, obj102):", key="wms_multiple_input_bar").strip()
-        dimensions_input = None 
+        dimensions_input = "0 x 0 x 0" 
         
         col_dir, col_qt = st.columns(2)
         with col_dir:
-            action = st.radio("Action:", ["TRANSFER", "OUT"]) # Hides "IN" option
+            action = st.radio("Action:", ["TRANSFER", "OUT"]) 
             
         col_f, col_t = st.columns(2)
         with col_f:
@@ -203,8 +218,7 @@ with tab1:
 
     scanned_metadata = {}
     if op_mode == "Single Entry" and action != "TRANSFER":
-        if dimensions_input:
-            scanned_metadata["dimensions"] = dimensions_input
+        scanned_metadata["dimensions"] = dimensions_input
         if configured_custom_bars:
             st.caption("📝 Transaction Extra Attributes Payload:")
             for bar_field in configured_custom_bars:
@@ -334,7 +348,7 @@ with tab1:
                 st.rerun()
 
 # ==========================================
-# TAB 2: SMART FINDER (WITH DIMENSIONS & IMAGES)
+# TAB 2: SMART FINDER (WITH DIMENSIONS FALLBACK)
 # ==========================================
 with tab2:
     search_sku = st.text_input("🔍 Search Object ID:").strip()
@@ -348,7 +362,10 @@ with tab2:
             st.success(f"Discovered {len(df)} corresponding matches:")
             for _, row in df.iterrows():
                 metadata_dict = row.get("metadata") or {}
-                dims = metadata_dict.get("dimensions", "N/A")
+                # If sizes missing or blank, fallback to clean placeholder context
+                dims = metadata_dict.get("dimensions", "0 x 0 x 0")
+                if not dims or str(dims).strip() == "":
+                    dims = "0 x 0 x 0"
                 
                 clean_meta_notes = {k: v for k, v in metadata_dict.items() if k != "dimensions"}
                 metadata_disp = f" | Notes: {clean_meta_notes}" if clean_meta_notes else ""
@@ -362,7 +379,7 @@ with tab2:
             st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK (EXCEL EXPORT READY)
+# TAB 3: LIVE STOCK (000 X 000 X 000 PRESET FORMAT)
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
@@ -372,13 +389,18 @@ with tab3:
         for r in all_items.data:
             metadata_dict = r.get("metadata") or {}
             
+            # Extract and check dimensions, inject baseline preset layout values if not present
+            fetched_dims = metadata_dict.get("dimensions", "0 x 0 x 0")
+            if not fetched_dims or str(fetched_dims).strip() == "":
+                fetched_dims = "0 x 0 x 0"
+                
             flat_row = {
                 "Internal DB ID": r["id"],
                 "Image Preview": r.get("image_url", ""), 
                 "Object ID": r["object_id"],
                 "Item Name": r["item_name"],
                 "Location": r["location"],
-                "Length x Weight x Height": metadata_dict.get("dimensions", "")
+                "Length x Weight x Height": fetched_dims
             }
             
             for custom_f in configured_custom_bars:
@@ -418,8 +440,13 @@ with tab3:
                     for idx, row in edited_df.iterrows():
                         db_id = base_df.loc[idx, "Internal DB ID"]
                         
+                        # Fallback control loop check when updating data table inline
+                        save_dims = str(row["Length x Weight x Height"]).strip()
+                        if not save_dims or save_dims == "":
+                            save_dims = "0 x 0 x 0"
+                            
                         meta_payload = {
-                            "dimensions": str(row["Length x Weight x Height"]).strip()
+                            "dimensions": save_dims
                         }
                         for col in edited_df.columns:
                             if col not in fixed_sys_cols and pd.notna(row[col]) and str(row[col]).strip() != "":
@@ -457,12 +484,16 @@ with tab3:
                         row_num = idx + 2
                         ws.row_dimensions[row_num].height = 45
                         
+                        save_excel_dims = str(row["Length x Weight x Height"]).strip()
+                        if not save_excel_dims or save_excel_dims == "":
+                            save_excel_dims = "0 x 0 x 0"
+                            
                         data_payload = [
                             "", 
                             str(row["Object ID"]),
                             str(row["Item Name"]),
                             str(row["Location"]),
-                            str(row["Length x Weight x Height"])
+                            save_excel_dims
                         ]
                         for custom_f in configured_custom_bars:
                             data_payload.append(str(row.get(custom_f, "")))
