@@ -153,14 +153,14 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (SECURE FILE UPLOADS)
+# TAB 1: OPERATIONAL TERMINAL (WITH EXCEL IMPORT)
 # ==========================================
 with tab1:
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
     
     st.markdown("---")
     
-    uploaded_image_path = None
+    uploaded_image_url = None
     
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
@@ -200,19 +200,80 @@ with tab1:
             loc_from, loc_to = None, None
 
     else:
-        sku_stream = st.text_area("📋 Scan Continuous ID Stream (use commas to separate, e.g., obj101, obj102):", key="wms_multiple_input_bar").strip()
-        dimensions_input = "0 x 0 x 0" 
+        # Multiple Entry Mode: Choice between quick barcode scan or full Excel file drop
+        import_mode = st.radio("Select Input Source:", ["Manual Stream Text Area", "📥 Drop in Excel File (.xlsx)"], horizontal=True)
         
-        col_dir, col_qt = st.columns(2)
-        with col_dir:
-            action = st.radio("Action:", ["TRANSFER", "OUT"]) 
+        if import_mode == "Manual Stream Text Area":
+            sku_stream = st.text_area("📋 Scan Continuous ID Stream (use commas to separate):", key="wms_multiple_input_bar").strip()
             
-        col_f, col_t = st.columns(2)
-        with col_f:
-            loc_from = st.selectbox("Source Location (FROM):", options=configured_locations, key="src_loc_multi")
-            location_input = loc_from
-        with col_t:
-            loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc_multi")
+            col_dir, col_qt = st.columns(2)
+            with col_dir:
+                action = st.radio("Action:", ["TRANSFER", "OUT"]) 
+                
+            col_f, col_t = st.columns(2)
+            with col_f:
+                loc_from = st.selectbox("Source Location (FROM):", options=configured_locations, key="src_loc_multi")
+                location_input = loc_from
+            with col_t:
+                loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc_multi")
+        else:
+            # EXCEL FILE UPLOADER INFRASTRUCTURE
+            st.write("### 📑 Bulk Excel Drop Gate")
+            st.caption("Matches your schema: columns must include **`Object ID`**, **`Item Name`**, **`Location`**, and optionally **`Image Preview`** or **`Length x Weight x Height`**")
+            
+            excel_file = st.file_uploader("Upload spreadsheet layout:", type=["xlsx"])
+            if excel_file:
+                try:
+                    excel_df = pd.read_excel(excel_file)
+                    st.success("Spreadsheet read successfully! Staged preview mapping:")
+                    st.dataframe(excel_df.head(5), use_container_width=True)
+                    
+                    if st.button("🚀 Commit Entire Excel Spreadsheet Rows to Live Inventory"):
+                        success_inserts = 0
+                        with st.spinner("Processing rows and pushing to backend arrays..."):
+                            for _, row in excel_df.iterrows():
+                                obj_id = str(row.get("Object ID", "")).strip()
+                                item_name = str(row.get("Item Name", f"Object {obj_id}")).strip()
+                                loc = str(row.get("Location", "A1")).strip().upper()
+                                size_data = str(row.get("Length x Weight x Height", "0 x 0 x 0")).strip()
+                                img_url = str(row.get("Image Preview", "")).strip()
+                                
+                                if obj_id and obj_id != "nan":
+                                    # Pack extra dynamic data fields into the metadata object safely
+                                    meta_payload = {"dimensions": size_data}
+                                    for custom_f in configured_custom_bars:
+                                        if custom_f in excel_df.columns:
+                                            meta_payload[custom_f] = str(row.get(custom_f, ""))
+                                            
+                                    insert_payload = {
+                                        "object_id": obj_id,
+                                        "item_name": item_name,
+                                        "location": loc,
+                                        "quantity": 1,
+                                        "image_url": img_url if img_url != "nan" else "",
+                                        "metadata": meta_payload,
+                                        "access_code": user_code,
+                                        "is_archived": False
+                                    }
+                                    
+                                    # Execute bulk transaction writes directly to Supabase
+                                    supabase.table("inventory_items").insert(insert_payload).execute()
+                                    
+                                    # Create logging history entries automatically
+                                    supabase.table("stock_ledger").insert({
+                                        "object_id": obj_id,
+                                        "movement_type": "IN",
+                                        "quantity": 1,
+                                        "access_code": user_code,
+                                        "operator": operator_username
+                                    }).execute()
+                                    
+                                    success_inserts += 1
+                                    
+                        st.success(f"🎉 Successfully injected {success_inserts} records into the inventory database grid!")
+                        st.rerun()
+                except Exception as file_err:
+                    st.error(f"Failed parsing columns layout: {str(file_err)}")
 
     scanned_metadata = {}
     if op_mode == "Single Entry" and action != "TRANSFER":
@@ -285,7 +346,6 @@ with tab1:
                             file_bytes = uploaded_file.read()
                             
                             supabase.storage.from_("item-images").upload(unique_filename, file_bytes, {"content-type": f"image/{file_extension}"})
-                            # Store only the structural filename reference inside the DB row
                             uploaded_image_path = unique_filename
                         except Exception as upload_err:
                             st.error(f"Failed to save visual asset: {str(upload_err)}")
@@ -293,7 +353,7 @@ with tab1:
                 success, msg = execute_transaction(sku_input, action, 1, location_input, loc_from, loc_to, scanned_metadata, uploaded_image_path)
                 if success: st.success(msg)
                 else: st.error(msg)
-    else:
+    elif op_mode == "Multiple Entry" and import_mode == "Manual Stream Text Area":
         col_queue, col_clear = st.columns(2)
         with col_queue:
             if st.button("📥 Check scanned"):
@@ -373,7 +433,6 @@ with tab2:
                 img_field = row.get("image_url")
                 if img_field and img_field.strip() != "":
                     try:
-                        # Generate an authenticated 60-second expiring URL link dynamically on the fly
                         if "/" in img_field or "http" in img_field:
                             img_path = img_field.split("/")[-1]
                         else:
@@ -387,7 +446,7 @@ with tab2:
             st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK (SECURE DATA GENERATION)
+# TAB 3: LIVE STOCK
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
@@ -401,7 +460,6 @@ with tab3:
             if not fetched_dims or str(fetched_dims).strip() == "":
                 fetched_dims = "0 x 0 x 0"
                 
-            # Compile a runtime preview link for Streamlit layout framework
             raw_url = r.get("image_url", "")
             runtime_preview = ""
             if raw_url and raw_url.strip() != "":
@@ -414,7 +472,7 @@ with tab3:
             flat_row = {
                 "Internal DB ID": r["id"],
                 "Image Preview": runtime_preview, 
-                "Storage Path Key": r.get("image_url", ""), # Hidden fallback reference track
+                "Storage Path Key": r.get("image_url", ""), 
                 "Object ID": r["object_id"],
                 "Item Name": r["item_name"],
                 "Location": r["location"],
@@ -435,7 +493,6 @@ with tab3:
         for extra_col in configured_custom_bars:
             if extra_col not in base_df.columns: base_df[extra_col] = ""
 
-        # Hide core database metrics and raw access files from layout dashboard
         visible_columns = [col for col in base_df.columns if col not in ["Internal DB ID", "Storage Path Key"]]
 
         edited_df = st.data_editor(
@@ -486,7 +543,7 @@ with tab3:
         with col_exp:
             excel_buffer = io.BytesIO()
             if st.button("📊 Compile & Export Rich Excel Report (.xlsx)"):
-                with st.spinner("Downloading private image tokens and packing secure spreadsheet matrix..."):
+                with st.spinner("Downloading private image tokens..."):
                     wb = Workbook()
                     ws = wb.active
                     ws.title = "Live Inventory Assets"
