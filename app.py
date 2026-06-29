@@ -6,11 +6,11 @@ import urllib.request
 import hashlib
 import uuid
 from zoneinfo import ZoneInfo
-import io  # 👈 ADD THIS LINE
-import requests  # 👈 ADD THIS LINE
-from openpyxl import Workbook  # 👈 ADD THIS LINE
-from openpyxl.drawing.image import Image as OpenpyxlImage  # 👈 ADD THIS LINE
-from PIL import Image as PILImage  # 👈 ADD THIS LINE
+import io  
+import requests  
+from openpyxl import Workbook  
+from openpyxl.drawing.image import Image as OpenpyxlImage  
+from PIL import Image as PILImage  
 
 st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layout="centered")
 
@@ -153,7 +153,7 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL (WITH DIMENSIONS INPUT)
+# TAB 1: OPERATIONAL TERMINAL (WITH DYNAMIC LAYOUTS)
 # ==========================================
 with tab1:
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
@@ -161,6 +161,7 @@ with tab1:
     st.markdown("---")
     
     uploaded_image_url = None
+    
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
         dimensions_input = st.text_input("📏 Dimensions (Length x Weight x Height):", placeholder="e.g. 50x20x30", key="dims_input_bar").strip()
@@ -168,28 +169,40 @@ with tab1:
         uploaded_file = st.file_uploader("📸 Optional: Attach Object Photo Asset", type=["png", "jpg", "jpeg", "webp"])
         if uploaded_file:
             st.image(uploaded_file, width=150, caption="Staged visual preview")
+            
+        col_dir, col_qt = st.columns(2)
+        with col_dir:
+            action = st.radio("Action:", ["IN", "OUT", "TRANSFER"])
+            
+        if action == "TRANSFER":
+            col_f, col_t = st.columns(2)
+            with col_f:
+                loc_from = st.selectbox("Source Location (FROM):", options=configured_locations, key="src_loc")
+                location_input = loc_from
+            with col_t:
+                loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc")
+        else:
+            location_input = st.selectbox("Location:", options=configured_locations)
+            loc_from, loc_to = None, None
+
     else:
+        # Multiple Entry UI variations
         sku_stream = st.text_area("📋 Scan Continuous ID Stream (use commas to separate, e.g., obj101, obj102):", key="wms_multiple_input_bar").strip()
-    
-    col_dir, col_qt = st.columns(2)
-    with col_dir:
-        action = st.radio("Action:", ["IN", "OUT", "TRANSFER"])
-    with col_qt:
-        # Kept abstractly behind database architecture to avoid breaking ledger logs schema, hidden logic layout assignment
-        qty = 1 
-        location_input = st.selectbox("Location:", options=configured_locations)
-        loc_from, loc_to = None, None
+        dimensions_input = None 
         
-    if action == "TRANSFER":
+        col_dir, col_qt = st.columns(2)
+        with col_dir:
+            action = st.radio("Action:", ["TRANSFER", "OUT"]) # Hides "IN" option
+            
         col_f, col_t = st.columns(2)
         with col_f:
-            loc_from = st.selectbox("Source Location (FROM):", options=configured_locations, key="src_loc")
+            loc_from = st.selectbox("Source Location (FROM):", options=configured_locations, key="src_loc_multi")
             location_input = loc_from
         with col_t:
-            loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc")
+            loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc_multi")
 
     scanned_metadata = {}
-    if action != "TRANSFER":
+    if op_mode == "Single Entry" and action != "TRANSFER":
         if dimensions_input:
             scanned_metadata["dimensions"] = dimensions_input
         if configured_custom_bars:
@@ -337,7 +350,6 @@ with tab2:
                 metadata_dict = row.get("metadata") or {}
                 dims = metadata_dict.get("dimensions", "N/A")
                 
-                # Exclude size info from running custom fields notes layout dump
                 clean_meta_notes = {k: v for k, v in metadata_dict.items() if k != "dimensions"}
                 metadata_disp = f" | Notes: {clean_meta_notes}" if clean_meta_notes else ""
                 
@@ -350,7 +362,7 @@ with tab2:
             st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK (HIDDEN ID, REMOVED QTY, ADDED SIZE)
+# TAB 3: LIVE STOCK (EXCEL EXPORT READY)
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
@@ -369,11 +381,9 @@ with tab3:
                 "Length x Weight x Height": metadata_dict.get("dimensions", "")
             }
             
-            # Map configured extra data tags excluding dimensions key
             for custom_f in configured_custom_bars:
                 flat_row[custom_f] = metadata_dict.get(custom_f, "")
                 
-            # Handle remaining untracked metadata
             if isinstance(metadata_dict, dict):
                 for k, v in metadata_dict.items():
                     if k not in ["dimensions"] and k not in configured_custom_bars:
@@ -385,7 +395,6 @@ with tab3:
         for extra_col in configured_custom_bars:
             if extra_col not in base_df.columns: base_df[extra_col] = ""
 
-        # Using explicit layout tracking maps to hide technical backend data rows
         visible_columns = [col for col in base_df.columns if col != "Internal DB ID"]
 
         edited_df = st.data_editor(
@@ -407,7 +416,7 @@ with tab3:
                 with st.spinner("Synchronizing backend databases..."):
                     fixed_sys_cols = ["Image Preview", "Object ID", "Item Name", "Location", "Length x Weight x Height"]
                     for idx, row in edited_df.iterrows():
-                        db_id = base_df.loc[idx, "Internal DB ID"] # Safe structural reference mapping target lookup key
+                        db_id = base_df.loc[idx, "Internal DB ID"]
                         
                         meta_payload = {
                             "dimensions": str(row["Length x Weight x Height"]).strip()
@@ -429,94 +438,67 @@ with tab3:
                     st.rerun()
                     
         with col_exp:
-            export_csv_data = base_df[visible_columns].to_csv(index=False).encode('utf-8')
-            st.download_button(label="📥 Export Ledger Analysis Data to CSV", data=export_csv_data, file_name=f"WMS_Inventory_Report_{datetime.date.today()}.csv", mime="text/csv")
+            excel_buffer = io.BytesIO()
+            if st.button("📊 Compile & Export Rich Excel Report (.xlsx)"):
+                with st.spinner("Downloading image tokens and building report layout..."):
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = "Live Inventory Assets"
+                    
+                    headers = ["Image Preview", "Object ID", "Item Name", "Location", "Length x Weight x Height"] + configured_custom_bars
+                    ws.append(headers)
+                    
+                    ws.row_dimensions[1].height = 25
+                    for col_idx in range(1, len(headers) + 1):
+                        ws.column_dimensions[chr(64 + col_idx)].width = 22
+                    ws.column_dimensions['A'].width = 12
+                    
+                    for idx, row in edited_df.iterrows():
+                        row_num = idx + 2
+                        ws.row_dimensions[row_num].height = 45
+                        
+                        data_payload = [
+                            "", 
+                            str(row["Object ID"]),
+                            str(row["Item Name"]),
+                            str(row["Location"]),
+                            str(row["Length x Weight x Height"])
+                        ]
+                        for custom_f in configured_custom_bars:
+                            data_payload.append(str(row.get(custom_f, "")))
+                            
+                        ws.append(data_payload)
+                        
+                        img_url = row["Image Preview"]
+                        if img_url and str(img_url).strip() != "":
+                            try:
+                                response = requests.get(img_url.strip(), timeout=5)
+                                if response.status_code == 200:
+                                    img_data = io.BytesIO(response.content)
+                                    pil_img = PILImage.open(img_data)
+                                    pil_img.thumbnail((55, 55))
+                                    
+                                    temp_img_buffer = io.BytesIO()
+                                    pil_img.save(temp_img_buffer, format="PNG")
+                                    temp_img_buffer.seek(0)
+                                    
+                                    excel_img = OpenpyxlImage(temp_img_buffer)
+                                    ws.add_image(excel_img, f"A{row_num}")
+                            except Exception:
+                                ws[f"A{row_num}"] = "Image Error"
+                    
+                    wb.save(excel_buffer)
+                    excel_buffer.seek(0)
+                    
+                    st.success("Excel sheet compilation successful!")
+                    st.download_button(
+                        label="📥 Download Rich Excel File (.xlsx)",
+                        data=excel_buffer,
+                        file_name=f"WMS_Detailed_Report_{datetime.date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
     else:
         st.info("Your workspace channels contain zero product assets data rows.")
-        import io
-import requests
-from openpyxl import Workbook
-from openpyxl.drawing.image import Image as OpenpyxlImage
-from PIL import Image as PILImage
-
-# ... (Keep all your existing layout code, look down into Tab 3 where export happens) ...
-
-with col_exp:
-    # 1. Create an in-memory Excel file buffer
-    excel_buffer = io.BytesIO()
-    
-    if st.button("📊 Compile & Export Rich Excel Report (.xlsx)"):
-        with st.spinner("Downloading image tokens and building report layout..."):
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Live Inventory Assets"
-            
-            # Create our display header row
-            headers = ["Image Preview", "Object ID", "Item Name", "Location", "Length x Weight x Height"] + configured_custom_bars
-            ws.append(headers)
-            
-            # Configure row dimensions to cleanly fit our small thumbnails
-            ws.row_dimensions[1].height = 25
-            for col_idx in range(1, len(headers) + 1):
-                ws.column_dimensions[chr(64 + col_idx)].width = 22
-            ws.column_dimensions['A'].width = 12 # Adjust Image column square box
-            
-            # Loop through current displayed data and construct rows
-            for idx, row in edited_df.iterrows():
-                row_num = idx + 2 # Excel is 1-indexed, row 1 is header
-                ws.row_dimensions[row_num].height = 45 # Set row height to accommodate image
-                
-                # Append text data fields (leaving Column A empty for the image placement)
-                data_payload = [
-                    "", # Image column placeholder
-                    str(row["Object ID"]),
-                    str(row["Item Name"]),
-                    str(row["Location"]),
-                    str(row["Length x Weight x Height"])
-                ]
-                for custom_f in configured_custom_bars:
-                    data_payload.append(str(row.get(custom_f, "")))
-                    
-                ws.append(data_payload)
-                
-                # Fetch and embed the image asset directly into Column A if url exists
-                img_url = row["Image Preview"]
-                if img_url and str(img_url).strip() != "":
-                    try:
-                        # Fetch the image file over the web safely
-                        response = requests.get(img_url.strip(), timeout=5)
-                        if response.status_code == 200:
-                            img_data = io.BytesIO(response.content)
-                            pil_img = PILImage.open(img_data)
-                            
-                            # Standardize thumbnail dimensions to match cell box parameters cleanly
-                            pil_img.thumbnail((55, 55)) 
-                            
-                            # Save back to a temp buffer for openpyxl to ingest
-                            temp_img_buffer = io.BytesIO()
-                            pil_img.save(temp_img_buffer, format="PNG")
-                            temp_img_buffer.seek(0)
-                            
-                            # Bind image into cell anchor position
-                            excel_img = OpenpyxlImage(temp_img_buffer)
-                            cell_anchor = f"A{row_num}"
-                            ws.add_image(excel_img, cell_anchor)
-                    except Exception:
-                        ws[f"A{row_num}"] = "Image Error" # Fallback if fetch fails
-            
-            # Save the workbook data into our memory buffer
-            wb.save(excel_buffer)
-            excel_buffer.seek(0)
-            
-            st.success("Excel sheet compilation successful!")
-            
-            # Provide download trigger natively on workspace screen
-            st.download_button(
-                label="📥 Download Rich Excel File (.xlsx)",
-                data=excel_buffer,
-                file_name=f"WMS_Detailed_Report_{datetime.date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
 
 # ==========================================
 # TAB 4: HISTORY
