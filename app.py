@@ -75,7 +75,6 @@ if st.session_state.user_session is None:
         login_pass = st.text_input("Password:", type="password", key="log_pass").strip()
         
         if st.button("🔑 Log In to Workspace"):
-           if st.button("🔑 Log In to Workspace"):
             if login_user and login_pass:
                 target_hash = hash_password(login_pass)
                 
@@ -84,7 +83,7 @@ if st.session_state.user_session is None:
                     user_query = supabase.table("user_profiles").select("*").eq("username", login_user).eq("password_hash", target_hash).execute()
                 except Exception as db_err:
                     st.error("⚠️ Raw Supabase Error Caught:")
-                    st.code(str(db_err)) # This forces the hidden message out of the redaction wrapper
+                    st.code(str(db_err))
                     st.stop()
                 # -----------------------------
                 
@@ -298,170 +297,4 @@ with tab1:
                     
                     total_consolidated_qty = int(row_task["scanned_count"] * base_qty_factor)
                     
-                    ok, res_msg = execute_transaction(sku, act, total_consolidated_qty, loc, l_from, l_to, meta_payload)
-                    if ok:
-                        success_count += 1
-                    else:
-                        st.error(res_msg)
-                        fail_count += 1
-                        
-                st.success(f"Processing sequence complete! Consolidated Synced Groups: {success_count} | Aborted runs: {fail_count}")
-                st.session_state.batch_queue = []
-                st.rerun()
-
-# ==========================================
-# TAB 2: SMART FINDER (HEADER REMOVED)
-# ==========================================
-with tab2:
-    search_sku = st.text_input("🔍 Search SKU:").strip()
-    
-    if search_sku:
-        wildcard_search = f"%{search_sku}%"
-        res = supabase.table("inventory_items").select("*").ilike("sku", wildcard_search).eq("access_code", user_code).eq("is_archived", False).execute()
-        
-        if res.data:
-            df = pd.DataFrame(res.data)
-            st.success(f"Discovered {len(df)} corresponding matches:")
-            for _, row in df.iterrows():
-                alert_flag = "⚠️ LOW STOCK LEVEL WARNING" if row['quantity'] <= row.get('min_stock', 0) else ""
-                metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
-                st.info(f"📦 **SKU:** `{row['sku']}` | 📍 **Location Matrix:** `{row['location']}` | 🔢 **Quantity:** {row['quantity']} units {alert_flag}{metadata_disp}")
-        else:
-            st.info("No matching item metrics located.")
-
-# ==========================================
-# TAB 3: LIVE STOCK (HEADER REMOVED)
-# ==========================================
-with tab3:
-    all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
-    
-    if all_items.data:
-        rows = []
-        low_stock_critical_warnings = []
-        
-        for r in all_items.data:
-            flat_row = {
-                "Internal DB ID": r["id"],
-                "SKU": r["sku"],
-                "Item Name": r["item_name"],
-                "Location": r["location"],
-                "Quantity": r["quantity"],
-                "Alert Threshold (Min)": r.get("min_stock", 0)
-            }
-            for custom_f in configured_custom_bars:
-                flat_row[custom_f] = ""
-            if isinstance(r["metadata"], dict):
-                for k, v in r["metadata"].items():
-                    flat_row[k] = v
-            rows.append(flat_row)
-            
-            if r["quantity"] <= r.get("min_stock", 0):
-                low_stock_critical_warnings.append(f"🚨 **SKU {r['sku']}** at Location **{r['location']}** has dropped beneath safety limits! Current level: {r['quantity']} (Min: {r.get('min_stock', 0)})")
-        
-        if low_stock_critical_warnings:
-            with st.expander("⚠️ UNRESOLVED SYSTEM BALANCING WARNINGS ALERT PANEL", expanded=True):
-                for alert in low_stock_critical_warnings:
-                    st.markdown(f'<div class="low-stock-alert">{alert}</div>', unsafe_allow_html=True)
-                    
-        base_df = pd.DataFrame(rows)
-        
-        for extra_col in configured_custom_bars:
-            if extra_col not in base_df.columns: base_df[extra_col] = ""
-
-        edited_df = st.data_editor(base_df, hide_index=True, use_container_width=True, disabled=["Internal DB ID"])
-        
-        col_sv, col_exp = st.columns(2)
-        with col_sv:
-            if st.button("💾 Apply Grid Parameter Modifications"):
-                with st.spinner("Synchronizing backend databases..."):
-                    fixed_sys_cols = ["Internal DB ID", "SKU", "Item Name", "Location", "Quantity", "Alert Threshold (Min)"]
-                    for idx, row in edited_df.iterrows():
-                        db_id = row["Internal DB ID"]
-                        meta_payload = {}
-                        for col in edited_df.columns:
-                            if col not in fixed_sys_cols and pd.notna(row[col]) and str(row[col]).strip() != "":
-                                meta_payload[col] = str(row[col])
-                                
-                        update_data = {
-                            "sku": str(row["SKU"]),
-                            "item_name": str(row["Item Name"]),
-                            "location": str(row["Location"]),
-                            "quantity": int(row["Quantity"]),
-                            "min_stock": int(row["Alert Threshold (Min)"]),
-                            "metadata": meta_payload,
-                            "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
-                        }
-                        supabase.table("inventory_items").update(update_data).eq("id", db_id).execute()
-                    st.success("🎉 Interface dashboard parameters synchronized cleanly!")
-                    st.rerun()
-                    
-        with col_exp:
-            export_csv_data = base_df.to_csv(index=False).encode('utf-8')
-            st.download_button(label="📥 Export Ledger Analysis Data to CSV", data=export_csv_data, file_name=f"WMS_Inventory_Report_{datetime.date.today()}.csv", mime="text/csv")
-    else:
-        st.info("Your workspace channels contain zero product assets data rows.")
-
-# ==========================================
-# TAB 4: HISTORY (HEADER REMOVED)
-# ==========================================
-with tab4:
-    ledger_query = supabase.table("stock_ledger").select("*").eq("access_code", user_code).order("timestamp", desc=True).execute()
-    
-    if ledger_query.data:
-        ledger_df = pd.DataFrame(ledger_query.data)
-        
-        def localize_timestamp(ts_str):
-            try:
-                clean_ts = ts_str.split("+")[0].split(".")[0]
-                utc_dt = datetime.datetime.strptime(clean_ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
-                local_dt = utc_dt.astimezone(user_tz)
-                return local_dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                return ts_str[:19].replace("T", " ")
-
-        ledger_df["Time Logged"] = ledger_df["timestamp"].apply(localize_timestamp)
-        
-        if "operator" not in ledger_df.columns: ledger_df["operator"] = "System Trace"
-        ledger_df["operator"] = ledger_df["operator"].fillna("System Trace")
-        
-        display_df = ledger_df[["Time Logged", "sku", "movement_type", "quantity", "operator"]].rename(
-            columns={"sku": "Product SKU", "movement_type": "Logistics Operation", "quantity": "Quantity Shift", "operator": "Operator Identity"}
-        )
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-        
-        st.download_button(label="📥 Download Transaction Audit Logs", data=display_df.to_csv(index=False).encode('utf-8'), file_name=f"WMS_Audit_Trail_{datetime.date.today()}.csv", mime="text/csv")
-    else:
-        st.info("No transaction history records discovered inside your workspace.")
-
-# ==========================================
-# TAB 5: PREFERENCES (HEADER KEPT)
-# ==========================================
-with tab5:
-    st.subheader("⚙️ Terminal View Configurations")
-    new_title = st.text_input("Modify App Dashboard Title:", value=user_profile.get("terminal_title", "Mobile WMS Terminal")).strip()
-    
-    st.markdown("---")
-    st.subheader("📍 Manage Warehouse Locations Dropdown")
-    locations_str = st.text_area("Enter active locations separated by commas:", value=", ".join(configured_locations))
-    parsed_locations = [x.strip().upper() for x in locations_str.split(",") if x.strip()]
-    
-    st.markdown("---")
-    st.subheader("📊 Manage Additional Information Bars")
-    custom_bars_str = st.text_area("Enter custom data entry fields separated by commas (e.g. Value, Weight, Supplier):", value=", ".join(configured_custom_bars))
-    parsed_custom_fields = [x.strip() for x in custom_bars_str.split(",") if x.strip()]
-    
-    if st.button("💾 Apply Configuration Parameters"):
-        if new_title and parsed_locations:
-            update_payload = {
-                "terminal_title": new_title,
-                "authorized_locations": parsed_locations,
-                "custom_data_fields": parsed_custom_fields
-            }
-            supabase.table("user_profiles").update(update_payload).eq("id", profile_db_id).execute()
-            
-            st.session_state.user_session["terminal_title"] = new_title
-            st.session_state.user_session["authorized_locations"] = parsed_locations
-            st.session_state.user_session["custom_data_fields"] = parsed_custom_fields
-            
-            st.success("Preferences saved successfully across your corporate account channel context!")
-            st.rerun()
+                    ok, res_msg = execute_transaction(sku, act
