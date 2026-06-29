@@ -4,6 +4,7 @@ from supabase import create_client, Client
 import datetime
 import urllib.request
 import hashlib
+import uuid
 from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="Enterprise WMS Platform", page_icon="📦", layout="centered")
@@ -147,15 +148,21 @@ with col_exit:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔄 Movement & Transfer", "🔍 Smart Finder", "📊 Live Stock", "📜 History", "⚙️ Preferences"])
 
 # ==========================================
-# TAB 1: OPERATIONAL TERMINAL
+# TAB 1: OPERATIONAL TERMINAL (WITH IMAGE DROP)
 # ==========================================
 with tab1:
     op_mode = st.radio("Logistics Action Mode:", ["Single Entry", "Multiple Entry"], horizontal=True)
     
     st.markdown("---")
     
+    uploaded_image_url = None
     if op_mode == "Single Entry":
         sku_input = st.text_input("📋 Enter Object ID:", key="wms_single_input_bar").strip()
+        
+        # New Feature: File / Camera Drag & Drop widget
+        uploaded_file = st.file_uploader("📸 Optional: Attach Object Photo Asset", type=["png", "jpg", "jpeg", "webp"])
+        if uploaded_file:
+            st.image(uploaded_file, width=150, caption="Staged visual preview")
     else:
         sku_stream = st.text_area("📋 Scan Continuous ID Stream (use commas to separate, e.g., obj101, obj102):", key="wms_multiple_input_bar").strip()
     
@@ -182,7 +189,7 @@ with tab1:
         for bar_field in configured_custom_bars:
             scanned_metadata[bar_field] = st.text_input(f"Enter {bar_field}:", key=f"scan_m_{bar_field}").strip()
 
-    def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None):
+    def execute_transaction(sku, act, q, loc, l_from=None, l_to=None, meta=None, img_url=None):
         if meta is None: meta = {}
         movement_type = "IN" if "IN" in act else "OUT" if "OUT" in act else "TRANSFER"
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -201,9 +208,11 @@ with tab1:
             dst_q = supabase.table("inventory_items").select("*").eq("object_id", sku).eq("location", l_to).eq("access_code", user_code).execute()
             if dst_q.data:
                 new_dst_q = dst_q.data[0]["quantity"] + q
-                supabase.table("inventory_items").update({"quantity": new_dst_q, "is_archived": False, "last_updated": now_iso}).eq("id", dst_q.data[0]["id"]).execute()
+                update_payload = {"quantity": new_dst_q, "is_archived": False, "last_updated": now_iso}
+                if img_url: update_payload["image_url"] = img_url
+                supabase.table("inventory_items").update(update_payload).eq("id", dst_q.data[0]["id"]).execute()
             else:
-                supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": l_to, "quantity": q, "access_code": user_code, "metadata": src_q.data[0].get("metadata", {})}).execute()
+                supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": l_to, "quantity": q, "access_code": user_code, "image_url": img_url, "metadata": src_q.data[0].get("metadata", {})}).execute()
                 
             supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "OUT", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
             supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": "IN", "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
@@ -226,14 +235,17 @@ with tab1:
                     return False, f"❌ Aborted '{sku}': Insufficient levels inside system matrix storage path. Available: {current_qty}"
                 
                 is_archived_flag = True if new_qty == 0 else False
-                supabase.table("inventory_items").update({"quantity": new_qty, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": now_iso}).eq("id", record["id"]).execute()
+                update_payload = {"quantity": new_qty, "is_archived": is_archived_flag, "metadata": current_meta, "last_updated": now_iso}
+                if img_url: update_payload["image_url"] = img_url
+                
+                supabase.table("inventory_items").update(update_payload).eq("id", record["id"]).execute()
                 supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
                 return True, f"✅ Sync operation complete for {sku}! Revised Total Balance: {new_qty}"
             else:
                 if movement_type == "OUT":
                     return False, f"❌ Aborted: Target tracking segment empty for {sku} inside location node {loc}."
                 else:
-                    supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": loc, "quantity": q, "metadata": meta, "access_code": user_code, "is_archived": False}).execute()
+                    supabase.table("inventory_items").insert({"object_id": sku, "item_name": f"Object {sku}", "location": loc, "quantity": q, "metadata": meta, "access_code": user_code, "is_archived": False, "image_url": img_url}).execute()
                     supabase.table("stock_ledger").insert({"object_id": sku, "movement_type": movement_type, "quantity": q, "access_code": user_code, "operator": operator_username}).execute()
                     return True, f"📦 Created fresh batch entry tracking for {sku} inside matrix sector {loc}."
 
@@ -244,7 +256,21 @@ with tab1:
             elif "," in sku_input:
                 st.error("Detecting tokens structure. Please navigate to Multiple Entry Mode to run comma separated scanner chains.")
             else:
-                success, msg = execute_transaction(sku_input, action, qty, location_input, loc_from, loc_to, scanned_metadata)
+                # Process file upload to bucket dynamically if present
+                if uploaded_file:
+                    with st.spinner("Uploading photo asset to bucket storage..."):
+                        try:
+                            file_extension = uploaded_file.name.split(".")[-1]
+                            unique_filename = f"{sku_input}_{uuid.uuid4().hex[:8]}.{file_extension}"
+                            file_bytes = uploaded_file.read()
+                            
+                            # Upload to 'item-images' bucket
+                            supabase.storage.from_("item-images").upload(unique_filename, file_bytes, {"content-type": f"image/{file_extension}"})
+                            uploaded_image_url = supabase.storage.from_("item-images").get_public_url(unique_filename)
+                        except Exception as upload_err:
+                            st.error(f"Failed to save visual asset: {str(upload_err)}")
+                
+                success, msg = execute_transaction(sku_input, action, qty, location_input, loc_from, loc_to, scanned_metadata, uploaded_image_url)
                 if success: st.success(msg)
                 else: st.error(msg)
     else:
@@ -320,11 +346,8 @@ with tab2:
             st.success(f"Discovered {len(df)} corresponding matches:")
             for _, row in df.iterrows():
                 metadata_disp = f" | Notes: {row['metadata']}" if row['metadata'] else ""
-                
-                # Render item profile information
                 st.info(f"📦 **Object ID:** `{row['object_id']}` | 📍 **Location Matrix:** `{row['location']}` | 🔢 **Quantity:** {row['quantity']} units{metadata_disp}")
                 
-                # Check and display image asset if available
                 img_url = row.get("image_url")
                 if img_url and img_url.strip() != "":
                     st.image(img_url, caption=f"Visual asset link for Object: {row['object_id']}", use_container_width=True)
