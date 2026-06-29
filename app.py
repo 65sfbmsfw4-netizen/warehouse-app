@@ -428,6 +428,90 @@ with tab3:
             st.download_button(label="📥 Export Ledger Analysis Data to CSV", data=export_csv_data, file_name=f"WMS_Inventory_Report_{datetime.date.today()}.csv", mime="text/csv")
     else:
         st.info("Your workspace channels contain zero product assets data rows.")
+        import io
+import requests
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from PIL import Image as PILImage
+
+# ... (Keep all your existing layout code, look down into Tab 3 where export happens) ...
+
+with col_exp:
+    # 1. Create an in-memory Excel file buffer
+    excel_buffer = io.BytesIO()
+    
+    if st.button("📊 Compile & Export Rich Excel Report (.xlsx)"):
+        with st.spinner("Downloading image tokens and building report layout..."):
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Live Inventory Assets"
+            
+            # Create our display header row
+            headers = ["Image Preview", "Object ID", "Item Name", "Location", "Length x Weight x Height"] + configured_custom_bars
+            ws.append(headers)
+            
+            # Configure row dimensions to cleanly fit our small thumbnails
+            ws.row_dimensions[1].height = 25
+            for col_idx in range(1, len(headers) + 1):
+                ws.column_dimensions[chr(64 + col_idx)].width = 22
+            ws.column_dimensions['A'].width = 12 # Adjust Image column square box
+            
+            # Loop through current displayed data and construct rows
+            for idx, row in edited_df.iterrows():
+                row_num = idx + 2 # Excel is 1-indexed, row 1 is header
+                ws.row_dimensions[row_num].height = 45 # Set row height to accommodate image
+                
+                # Append text data fields (leaving Column A empty for the image placement)
+                data_payload = [
+                    "", # Image column placeholder
+                    str(row["Object ID"]),
+                    str(row["Item Name"]),
+                    str(row["Location"]),
+                    str(row["Length x Weight x Height"])
+                ]
+                for custom_f in configured_custom_bars:
+                    data_payload.append(str(row.get(custom_f, "")))
+                    
+                ws.append(data_payload)
+                
+                # Fetch and embed the image asset directly into Column A if url exists
+                img_url = row["Image Preview"]
+                if img_url and str(img_url).strip() != "":
+                    try:
+                        # Fetch the image file over the web safely
+                        response = requests.get(img_url.strip(), timeout=5)
+                        if response.status_code == 200:
+                            img_data = io.BytesIO(response.content)
+                            pil_img = PILImage.open(img_data)
+                            
+                            # Standardize thumbnail dimensions to match cell box parameters cleanly
+                            pil_img.thumbnail((55, 55)) 
+                            
+                            # Save back to a temp buffer for openpyxl to ingest
+                            temp_img_buffer = io.BytesIO()
+                            pil_img.save(temp_img_buffer, format="PNG")
+                            temp_img_buffer.seek(0)
+                            
+                            # Bind image into cell anchor position
+                            excel_img = OpenpyxlImage(temp_img_buffer)
+                            cell_anchor = f"A{row_num}"
+                            ws.add_image(excel_img, cell_anchor)
+                    except Exception:
+                        ws[f"A{row_num}"] = "Image Error" # Fallback if fetch fails
+            
+            # Save the workbook data into our memory buffer
+            wb.save(excel_buffer)
+            excel_buffer.seek(0)
+            
+            st.success("Excel sheet compilation successful!")
+            
+            # Provide download trigger natively on workspace screen
+            st.download_button(
+                label="📥 Download Rich Excel File (.xlsx)",
+                data=excel_buffer,
+                file_name=f"WMS_Detailed_Report_{datetime.date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 # ==========================================
 # TAB 4: HISTORY
