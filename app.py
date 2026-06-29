@@ -75,9 +75,18 @@ if st.session_state.user_session is None:
         login_pass = st.text_input("Password:", type="password", key="log_pass").strip()
         
         if st.button("🔑 Log In to Workspace"):
+           if st.button("🔑 Log In to Workspace"):
             if login_user and login_pass:
                 target_hash = hash_password(login_pass)
-                user_query = supabase.table("user_profiles").select("*").eq("username", login_user).eq("password_hash", target_hash).execute()
+                
+                # --- TEMPORARY DEBUG HOOK ---
+                try:
+                    user_query = supabase.table("user_profiles").select("*").eq("username", login_user).eq("password_hash", target_hash).execute()
+                except Exception as db_err:
+                    st.error("⚠️ Raw Supabase Error Caught:")
+                    st.code(str(db_err)) # This forces the hidden message out of the redaction wrapper
+                    st.stop()
+                # -----------------------------
                 
                 if user_query.data:
                     user_record = user_query.data[0]
@@ -88,8 +97,6 @@ if st.session_state.user_session is None:
                     st.rerun()
                 else:
                     st.error("Invalid username or password configuration match.")
-            else:
-                st.warning("Please input both login fields.")
                 
     with auth_mode[1]:
         st.subheader("Create Corporate Account")
