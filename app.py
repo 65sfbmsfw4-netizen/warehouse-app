@@ -200,7 +200,6 @@ with tab1:
             loc_from, loc_to = None, None
 
     else:
-        # Multiple Entry Mode: Choice between quick barcode scan or full Excel file drop
         import_mode = st.radio("Select Input Source:", ["Manual Stream Text Area", "📥 Drop in Excel File (.xlsx)"], horizontal=True)
         
         if import_mode == "Manual Stream Text Area":
@@ -217,7 +216,6 @@ with tab1:
             with col_t:
                 loc_to = st.selectbox("Destination Location (TO):", options=configured_locations, key="dst_loc_multi")
         else:
-            # EXCEL FILE UPLOADER INFRASTRUCTURE
             st.write("### 📑 Bulk Excel Drop Gate")
             st.caption("Matches your schema: columns must include **`Object ID`**, **`Item Name`**, **`Location`**, and optionally **`Image Preview`** or **`Length x Weight x Height`**")
             
@@ -239,7 +237,6 @@ with tab1:
                                 img_url = str(row.get("Image Preview", "")).strip()
                                 
                                 if obj_id and obj_id != "nan":
-                                    # Pack extra dynamic data fields into the metadata object safely
                                     meta_payload = {"dimensions": size_data}
                                     for custom_f in configured_custom_bars:
                                         if custom_f in excel_df.columns:
@@ -256,10 +253,8 @@ with tab1:
                                         "is_archived": False
                                     }
                                     
-                                    # Execute bulk transaction writes directly to Supabase
                                     supabase.table("inventory_items").insert(insert_payload).execute()
                                     
-                                    # Create logging history entries automatically
                                     supabase.table("stock_ledger").insert({
                                         "object_id": obj_id,
                                         "movement_type": "IN",
@@ -446,7 +441,7 @@ with tab2:
             st.info("No matching object metrics located.")
 
 # ==========================================
-# TAB 3: LIVE STOCK
+# TAB 3: LIVE STOCK (DYNAMIC ROWS & COLUMN CLEANING)
 # ==========================================
 with tab3:
     all_items = supabase.table("inventory_items").select("*").eq("access_code", user_code).eq("is_archived", False).order("location", desc=False).execute()
@@ -495,10 +490,14 @@ with tab3:
 
         visible_columns = [col for col in base_df.columns if col not in ["Internal DB ID", "Storage Path Key"]]
 
+        st.caption("💡 *To delete an entire item record row, select the row box on the left margin and press the `Delete` key on your keyboard.*")
+        
+        # Enforcing num_rows="dynamic" enables row deletion tracking natively via UI interface layout wrapper
         edited_df = st.data_editor(
             base_df[visible_columns], 
             hide_index=True, 
-            use_container_width=True, 
+            use_container_width=True,
+            num_rows="dynamic",
             column_config={
                 "Image Preview": st.column_config.ImageColumn(
                     "Image Preview", 
@@ -510,34 +509,48 @@ with tab3:
         
         col_sv, col_exp = st.columns(2)
         with col_sv:
-            if st.button("💾 Apply Grid Parameter Modifications"):
-                with st.spinner("Synchronizing backend databases..."):
+            if st.button("💾 Apply Grid Modifications & Synchronize Rows"):
+                with st.spinner("Processing additions, edits, and deletions..."):
+                    # Check for row deletions by matching remaining rows against baseline IDs
+                    remaining_object_ids = edited_df["Object ID"].astype(str).tolist()
+                    deleted_records = base_df[~base_df["Object ID"].astype(str).isin(remaining_object_ids)]
+                    
+                    # 1. Process deletions out of the live dashboard view
+                    for _, deleted_row in deleted_records.iterrows():
+                        del_id = deleted_row["Internal DB ID"]
+                        supabase.table("inventory_items").update({"is_archived": True, "quantity": 0}).eq("id", del_id).execute()
+                        supabase.table("stock_ledger").insert({
+                            "object_id": deleted_row["Object ID"], "movement_type": "OUT", 
+                            "quantity": 1, "access_code": user_code, "operator": operator_username
+                        }).execute()
+                    
+                    # 2. Synchronize current updates/edits
                     fixed_sys_cols = ["Image Preview", "Object ID", "Item Name", "Location", "Length x Weight x Height"]
                     for idx, row in edited_df.iterrows():
-                        db_id = base_df.loc[idx, "Internal DB ID"]
-                        old_path = base_df.loc[idx, "Storage Path Key"]
-                        
-                        save_dims = str(row["Length x Weight x Height"]).strip()
-                        if not save_dims or save_dims == "":
-                            save_dims = "0 x 0 x 0"
+                        if idx in base_df.index:
+                            db_id = base_df.loc[idx, "Internal DB ID"]
+                            old_path = base_df.loc[idx, "Storage Path Key"]
                             
-                        meta_payload = {
-                            "dimensions": save_dims
-                        }
-                        for col in edited_df.columns:
-                            if col not in fixed_sys_cols and pd.notna(row[col]) and str(row[col]).strip() != "":
-                                meta_payload[col] = str(row[col])
+                            save_dims = str(row["Length x Weight x Height"]).strip()
+                            if not save_dims or save_dims == "":
+                                save_dims = "0 x 0 x 0"
                                 
-                        update_data = {
-                            "object_id": str(row["Object ID"]),
-                            "item_name": str(row["Item Name"]),
-                            "location": str(row["Location"]),
-                            "image_url": old_path, 
-                            "metadata": meta_payload,
-                            "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
-                        }
-                        supabase.table("inventory_items").update(update_data).eq("id", db_id).execute()
-                    st.success("🎉 Interface dashboard parameters synchronized cleanly!")
+                            meta_payload = {"dimensions": save_dims}
+                            for col in edited_df.columns:
+                                if col not in fixed_sys_cols and pd.notna(row[col]) and str(row[col]).strip() != "":
+                                    meta_payload[col] = str(row[col])
+                                    
+                            update_data = {
+                                "object_id": str(row["Object ID"]),
+                                "item_name": str(row["Item Name"]),
+                                "location": str(row["Location"]),
+                                "image_url": old_path, 
+                                "metadata": meta_payload,
+                                "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                            }
+                            supabase.table("inventory_items").update(update_data).eq("id", db_id).execute()
+                            
+                    st.success("🎉 Row synchronization complete!")
                     st.rerun()
                     
         with col_exp:
@@ -604,6 +617,22 @@ with tab3:
                         file_name=f"WMS_Secure_Report_{datetime.date.today()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
+                    
+        # ==========================================
+        # UTILITY COLUMN DELETION ENGINE
+        # ==========================================
+        if configured_custom_bars:
+            st.markdown("---")
+            st.markdown("### 🗑️ Purge Custom Data Field Columns")
+            col_drop_select = st.selectbox("Select a custom column metadata bar to delete from inventory schema structure:", options=[""] + configured_custom_bars)
+            if col_drop_select and st.button("❌ Completely Delete Selected Attribute Column"):
+                updated_custom_bars = [field for field in configured_custom_bars if field != col_drop_select]
+                
+                # Update account tracking preference dictionary configurations across Supabase profiles context
+                supabase.table("user_profiles").update({"custom_data_fields": updated_custom_bars}).eq("id", profile_db_id).execute()
+                st.session_state.user_session["custom_data_fields"] = updated_custom_bars
+                st.success(f"Column '{col_drop_select}' successfully purged from terminal metrics mapping views.")
+                st.rerun()
     else:
         st.info("Your workspace channels contain zero product assets data rows.")
 
