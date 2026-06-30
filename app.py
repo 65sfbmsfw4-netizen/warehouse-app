@@ -655,4 +655,65 @@ with tab3:
     else:
         st.info("Your workspace channels contain zero product assets data rows.")
 
-# ... (Rest of the script tabs 4 & 5 remain completely unmodified) ...
+# ==========================================
+# TAB 4: HISTORY
+# ==========================================
+with tab4:
+    ledger_query = supabase.table("stock_ledger").select("*").eq("access_code", user_code).order("timestamp", desc=True).execute()
+
+    if ledger_query.data:
+        ledger_df = pd.DataFrame(ledger_query.data)
+
+        def localize_timestamp(ts_str):
+            try:
+                clean_ts = ts_str.split("+")[0].split(".")[0]
+                utc_dt = datetime.datetime.strptime(clean_ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+                local_dt = utc_dt.astimezone(user_tz)
+                return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return ts_str[:19].replace("T", " ")
+
+        ledger_df["Time Logged"] = ledger_df["timestamp"].apply(localize_timestamp)
+        ledger_df["operator"] = ledger_df.get("operator", "System Trace").fillna("System Trace")
+
+        display_df = ledger_df[["Time Logged", "object_id", "movement_type", "operator"]].rename(
+            columns={"object_id": "Object ID", "movement_type": "Logistics Operation", "operator": "Operator Identity"}
+        )
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        st.download_button(label="📥 Download Transaction Audit Logs", data=display_df.to_csv(index=False).encode('utf-8'), file_name=f"WMS_Audit_Trail_{datetime.date.today()}.csv", mime="text/csv")
+    else:
+        st.info("No transaction history records discovered inside your workspace.")
+
+# ==========================================
+# TAB 5: PREFERENCES
+# ==========================================
+with tab5:
+    st.subheader("⚙️ Terminal View Configurations")
+    new_title = st.text_input("Modify App Dashboard Title:", value=user_profile.get("terminal_title", "Mobile WMS Terminal")).strip()
+
+    st.markdown("---")
+    st.subheader("📍 Manage Warehouse Locations Dropdown")
+    locations_str = st.text_area("Enter active locations separated by commas:", value=", ".join(configured_locations))
+    parsed_locations = [x.strip().upper() for x in locations_str.split(",") if x.strip()]
+
+    st.markdown("---")
+    st.subheader("📊 Manage Additional Information Bars")
+    custom_bars_str = st.text_area("Enter custom data entry fields separated by commas (e.g. Value, Weight, Supplier):", value=", ".join(configured_custom_bars))
+    parsed_custom_fields = [x.strip() for x in custom_bars_str.split(",") if x.strip()]
+
+    if st.button("💾 Apply Configuration Parameters"):
+        if new_title and parsed_locations:
+            update_payload = {
+                "terminal_title": new_title,
+                "authorized_locations": parsed_locations,
+                "custom_data_fields": parsed_custom_fields
+            }
+            supabase.table("user_profiles").update(update_payload).eq("id", profile_db_id).execute()
+
+            st.session_state.user_session["terminal_title"] = new_title
+            st.session_state.user_session["authorized_locations"] = parsed_locations
+            st.session_state.user_session["custom_data_fields"] = parsed_custom_fields
+
+            st.success("Preferences saved successfully across your corporate account channel context!")
+            st.rerun()
