@@ -618,7 +618,7 @@ with tab3:
             
             if confirm_checkbox:
                 if st.button("🗑️ Permanently Archive Record Row"):
-                    with St.spinner("Archiving record asset tokens..."):
+                    with st.spinner("Archiving record asset tokens..."):
                         # Lookup matched DB Row internally
                         matched_row = base_df[base_df["Object ID"].astype(str) == selected_drop_sku].iloc[0]
                         target_db_id = matched_row["Internal DB ID"]
